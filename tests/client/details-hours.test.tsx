@@ -11,7 +11,7 @@ vi.mock("../../src/client/api.js", () => ({
 
 import { DetailsPanel } from "../../src/client/components/DetailsPanel.js";
 
-function place(hours: unknown): Place {
+function place(hours: unknown, extraFields: Record<string, unknown> = {}): Place {
   return {
     id: "place-1",
     source: "osm",
@@ -24,7 +24,7 @@ function place(hours: unknown): Place {
     lat: 23.78,
     lon: 90.41,
     distanceMeters: null,
-    fields: { hours },
+    fields: { hours, ...extraFields },
     provenance: {},
     detailsStatus: "fetched",
     detailsFetchedAt: null,
@@ -35,8 +35,8 @@ function place(hours: unknown): Place {
   };
 }
 
-function renderDetails(hours: unknown) {
-  placeRequest.mockResolvedValue(place(hours));
+function renderDetails(hours: unknown, extraFields: Record<string, unknown> = {}) {
+  placeRequest.mockResolvedValue(place(hours, extraFields));
   return render(
     <DetailsPanel
       placeId="place-1"
@@ -108,5 +108,49 @@ describe("DetailsPanel opening hours", () => {
     renderDetails("Mo-Su 11:00-23:00");
     expect(await screen.findByText("Mo-Su 11:00-23:00")).toBeInTheDocument();
     expect(screen.queryByRole("region", { name: /opening hours/i })).not.toBeInTheDocument();
+  });
+});
+
+describe("DetailsPanel visual summary", () => {
+  it("summarizes rating, open state, and price level for the place", async () => {
+    renderDetails(null, {
+      rating: 4.5,
+      reviews: 1200,
+      open_state: "Open ⋅ Closes 11 PM",
+      price: "$$",
+    });
+
+    const hero = await screen.findByRole("region", { name: /place summary/i });
+    expect(within(hero).getByLabelText(/rated 4\.5 out of 5 from 1200 source reviews/i)).toBeInTheDocument();
+    expect(within(hero).getByText("4.5")).toBeInTheDocument();
+    expect(within(hero).getByText("1,200 source reviews")).toBeInTheDocument();
+
+    const fill = hero.querySelector<HTMLElement>(".stars__fill");
+    expect(fill).toHaveStyle({ width: "90%" });
+
+    expect(within(hero).getByText("Open now")).toBeInTheDocument();
+    expect(within(hero).getByText("Closes 11 PM")).toBeInTheDocument();
+    expect(within(hero).getByText("Price level $$", { selector: ".visually-hidden" })).toBeInTheDocument();
+  });
+
+  it("renders service, accessibility, and offering attributes as chips", async () => {
+    renderDetails(null, {
+      service_options: { dine_in: true, takeout: true, delivery: false },
+      accessibility: { wheelchair_accessible_entrance: true },
+      at_this_place: ["Dogs allowed"],
+    });
+
+    const highlights = await screen.findByRole("region", { name: /highlights/i });
+    expect(within(highlights).getByText("Services")).toBeInTheDocument();
+    expect(within(highlights).getByText(/^Dine in/)).toBeInTheDocument();
+    expect(within(highlights).getByText(/^Takeout/)).toBeInTheDocument();
+    expect(within(highlights).getByText("Accessibility")).toBeInTheDocument();
+    expect(within(highlights).getByText(/^Wheelchair accessible entrance/)).toBeInTheDocument();
+    expect(within(highlights).getByText("At this place")).toBeInTheDocument();
+    expect(within(highlights).getByText(/^Dogs allowed/)).toBeInTheDocument();
+
+    const delivery = within(highlights).getByText(/^Delivery/).closest("li");
+    expect(delivery).toHaveClass("detail-chip--off");
+    expect(delivery).toHaveTextContent(": no");
   });
 });
