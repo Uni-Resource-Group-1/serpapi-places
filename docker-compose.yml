@@ -1,0 +1,99 @@
+name: serp-places
+
+x-app: &app
+  build:
+    context: .
+  image: serp-places:latest
+  restart: unless-stopped
+  env_file:
+    - .env
+  environment:
+    NODE_ENV: production
+    HOST: 0.0.0.0
+    PORT: "3001"
+    TRUST_PROXY: "true"
+    COOKIE_SECURE: "true"
+    APP_ORIGIN: ${APP_ORIGIN:-https://serpapiplaces.dhakafareast.tech}
+    DATA_DIR: /app/data
+    EXPORTS_DIR: /app/data/exports
+    DATABASE_URL: postgres://${POSTGRES_USER:-places}:${POSTGRES_PASSWORD}@db:5432/${POSTGRES_DB:-places_discovery}
+  volumes:
+    - serp_places_data:/app/data
+
+services:
+  db:
+    image: postgres:16-alpine
+    container_name: serp-places-db
+    restart: unless-stopped
+    environment:
+      POSTGRES_DB: ${POSTGRES_DB:-places_discovery}
+      POSTGRES_USER: ${POSTGRES_USER:-places}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:?Set POSTGRES_PASSWORD in .env}
+    volumes:
+      - serp_places_pgdata:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U ${POSTGRES_USER:-places} -d ${POSTGRES_DB:-places_discovery}"]
+      interval: 10s
+      timeout: 5s
+      retries: 10
+      start_period: 20s
+    networks:
+      - internal
+
+  api:
+    <<: *app
+    container_name: serp-places-api
+    depends_on:
+      db:
+        condition: service_healthy
+    healthcheck:
+      test:
+        [
+          "CMD",
+          "node",
+          "-e",
+          "fetch('http://127.0.0.1:3001/health/ready').then((r)=>process.exit(r.ok?0:1)).catch(()=>process.exit(1))",
+        ]
+      interval: 20s
+      timeout: 5s
+      retries: 5
+      start_period: 30s
+    networks:
+      - internal
+      - traefik
+    labels:
+      traefik.enable: "true"
+      traefik.docker.network: ${TRAEFIK_NETWORK:-traefik}
+      traefik.http.routers.serp-places.rule: Host(`${APP_HOST:-serpapiplaces.dhakafareast.tech}`)
+      traefik.http.routers.serp-places.entrypoints: ${TRAEFIK_ENTRYPOINT:-websecure}
+      traefik.http.routers.serp-places.tls: "true"
+      traefik.http.routers.serp-places.tls.certresolver: ${TRAEFIK_CERT_RESOLVER:-letsencrypt}
+      traefik.http.routers.serp-places.service: serp-places
+      traefik.http.services.serp-places.loadbalancer.server.port: "3001"
+      traefik.http.routers.serp-places-http.rule: Host(`${APP_HOST:-serpapiplaces.dhakafareast.tech}`)
+      traefik.http.routers.serp-places-http.entrypoints: ${TRAEFIK_HTTP_ENTRYPOINT:-web}
+      traefik.http.routers.serp-places-http.middlewares: serp-places-https-redirect
+      traefik.http.middlewares.serp-places-https-redirect.redirectscheme.scheme: https
+
+  worker:
+    <<: *app
+    container_name: serp-places-worker
+    command: ["node", "dist/server/worker.js"]
+    depends_on:
+      api:
+        condition: service_healthy
+    networks:
+      - internal
+
+volumes:
+  serp_places_pgdata:
+    name: serp_places_pgdata
+  serp_places_data:
+    name: serp_places_data
+
+networks:
+  internal:
+    name: serp_places_internal
+  traefik:
+    external: true
+    name: ${TRAEFIK_NETWORK:-traefik}
