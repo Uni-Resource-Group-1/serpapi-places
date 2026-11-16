@@ -10,6 +10,7 @@ import {
 } from "../auth.js";
 import { config } from "../config.js";
 import { audit } from "../services/audit.js";
+import { resolveSerpApiKey } from "../services/serpapi-credentials.js";
 import { hashIp } from "../auth-crypto.js";
 import { AppError } from "../errors.js";
 import { closePool } from "../db.js";
@@ -75,7 +76,7 @@ export async function registerAuthRoutes(app: FastifyInstance): Promise<void> {
     version: config.version,
     accessRequired: true,
     env: config.env,
-    serpapiConfigured: Boolean(config.serpapi.apiKey),
+    serpapiConfigured: Boolean(await resolveSerpApiKey(config)),
     reviewsEnabled: config.serpapi.reviewsEnabled,
     serpapiExportEnabled: config.serpapi.exportEnabled,
     tiles: config.tiles,

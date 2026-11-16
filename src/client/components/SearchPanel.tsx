@@ -555,6 +555,12 @@ export function SearchPanel({
               <button type="button" className="button button--secondary button--small" disabled={importParsing || !importText.trim()} onClick={onParseImports}>{importParsing ? "Checking links…" : "Parse references"}</button>
               <span className="field__hint">{importRefs.length} / {hardLimits.maxImportPlaces} references ready</span>
             </div>
+            {importText.trim() && importRefs.length === 0 && !importParsing ? (
+              <p className="field__hint field__hint--warning">
+                Press “Parse references” to turn the pasted links into places before running the import. Editing the box
+                clears any earlier parse so the run always matches what you see.
+              </p>
+            ) : null}
             {importRejected.length > 0 ? <ul className="field__hint field__hint--warning">{importRejected.map((item, index) => <li key={`${item.input}-${index}`}>{item.input}: {item.reason}</li>)}</ul> : null}
             <p className="field__hint">Each accepted place uses one paid SerpApi details request. Only Google-hosted links are resolved server-side. SerpApi configured: {serpapiConfigured ? "yes" : "no"}.</p>
           </div>

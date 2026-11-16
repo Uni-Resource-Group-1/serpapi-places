@@ -1,4 +1,5 @@
 import type {
+  AreaCheckKind,
   Collection,
   DuplicateCandidate,
   Place,
@@ -33,6 +34,8 @@ export interface PlaceRow {
   saved_id: string | null;
   review_count: string | number | null;
   review_fetched_at: Date | null;
+  inside_area?: boolean | null;
+  area_check?: AreaCheckKind | null;
 }
 
 export function rowToPlace(row: PlaceRow, reviewsEnabled: boolean): Place {
@@ -49,6 +52,8 @@ export function rowToPlace(row: PlaceRow, reviewsEnabled: boolean): Place {
     lat: row.lat,
     lon: row.lon,
     distanceMeters: row.distance_m,
+    insideArea: row.inside_area ?? null,
+    areaCheck: row.area_check ?? null,
     fields: row.fields ?? {},
     provenance: row.field_provenance ?? {},
     detailsStatus: row.details_status,
@@ -80,7 +85,7 @@ const placeColumns = `
 
 export async function fetchRunPlaces(runId: string, reviewsEnabled: boolean): Promise<Place[]> {
   const rows = await many<PlaceRow>(
-    `SELECT ${placeColumns}, rp.distance_m
+    `SELECT ${placeColumns}, rp.distance_m, rp.inside_area, rp.area_check
      FROM run_places rp
      JOIN source_place_records s ON s.id = rp.source_record_id
      LEFT JOIN saved_places sp ON sp.source_record_id = s.id
@@ -224,6 +229,8 @@ function snapshotToPlace(snapshot: Record<string, unknown>, savedId: string, _ex
     lat: Number(snapshot.lat ?? 0),
     lon: Number(snapshot.lon ?? 0),
     distanceMeters: null,
+    insideArea: null,
+    areaCheck: null,
     fields: (snapshot.fields as Record<string, unknown> | undefined) ?? {},
     provenance: (snapshot.provenance as Place["provenance"] | undefined) ?? {},
     detailsStatus: "fetched",

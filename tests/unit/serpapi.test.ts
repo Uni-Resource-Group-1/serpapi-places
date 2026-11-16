@@ -5,6 +5,12 @@ vi.mock("../../src/server/sources/http.js", () => ({
   requestJson: vi.fn(),
 }));
 
+// Provider tests must not reach the settings database; credential precedence is
+// covered separately in serpapi-credentials.test.ts.
+vi.mock("../../src/server/services/serpapi-credentials.js", () => ({
+  resolveSerpApiKey: vi.fn().mockResolvedValue("fake-serpapi-key"),
+}));
+
 import { requestJson } from "../../src/server/sources/http.js";
 import { loadConfig } from "../../src/server/config.js";
 import {
@@ -448,5 +454,13 @@ describe("getSerpApiReviews", () => {
 
   it("requires an identifier", async () => {
     await expect(getSerpApiReviews({}, 1, null, config)).rejects.toThrow(/identifier/i);
+  });
+});
+
+describe("SerpApi pagination offsets", () => {
+  it("is zero-based so the first request asks for start=0", () => {
+    expect(buildSerpApiSearchParams(criteria(), 0, config).get("start")).toBe("0");
+    expect(buildSerpApiSearchParams(criteria(), 1, config).get("start")).toBe("20");
+    expect(buildSerpApiSearchParams(criteria(), 3, config).get("start")).toBe("60");
   });
 });

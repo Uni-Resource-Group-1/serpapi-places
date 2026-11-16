@@ -20,6 +20,7 @@ interface ExportRow {
   format: ExportFormat;
   fields: string[];
   sources: Source[];
+  inside_only: boolean;
   status: ExportJob["status"];
   row_count: number | null;
   omitted_sources: string[];
@@ -29,6 +30,8 @@ interface ExportRow {
   created_at: Date;
   finished_at: Date | null;
   expires_at: Date | null;
+  download_count: number;
+  last_downloaded_at: Date | null;
 }
 
 function exportDto(row: ExportRow): ExportJob {
@@ -41,6 +44,7 @@ function exportDto(row: ExportRow): ExportJob {
     format: row.format,
     fields: row.fields,
     sources: row.sources,
+    insideOnly: Boolean(row.inside_only),
     status: row.status,
     rowCount: row.row_count,
     omittedSources: row.omitted_sources ?? [],
@@ -48,6 +52,9 @@ function exportDto(row: ExportRow): ExportJob {
     createdAt: row.created_at.toISOString(),
     finishedAt: row.finished_at?.toISOString() ?? null,
     expiresAt: row.expires_at?.toISOString() ?? null,
+    fileName: row.file_name,
+    downloadCount: row.download_count ?? 0,
+    lastDownloadedAt: row.last_downloaded_at?.toISOString() ?? null,
     downloadUrl: active ? `/api/export-jobs/${row.id}/download` : null,
     manifest: row.manifest,
   };
@@ -60,6 +67,7 @@ const createExportSchema = z.object({
   format: z.enum(["csv", "geojson", "json", "xlsx"]),
   fields: z.unknown().optional(),
   sources: z.array(z.enum(["osm", "serpapi"])).min(1).max(2),
+  insideOnly: z.boolean().optional().default(false),
 }).superRefine((value, ctx) => {
   if (value.scope === "saved" && !value.savedPlaceIds?.length) {
     ctx.addIssue({ code: z.ZodIssueCode.custom, message: "Select at least one saved place to export.", path: ["savedPlaceIds"] });
@@ -112,9 +120,40 @@ export async function registerExportRoutes(app: FastifyInstance): Promise<void> 
         }
       }
       const selection = parsed.data.scope === "saved" ? [...new Set(parsed.data.savedPlaceIds ?? [])] : null;
+      // Collapse repeat submissions: a double-click or a retry must not build a
+      // second identical archive. Identical requests inside 60 seconds reuse
+      // the existing job instead.
+      const duplicate = await one<ExportRow>(
+        `SELECT * FROM export_jobs
+         WHERE scope = $1
+           AND scope_id IS NOT DISTINCT FROM $2::uuid
+           AND format = $3
+           AND fields = $4::text[]
+           AND sources = $5::text[]
+           AND inside_only = $6
+           AND selection IS NOT DISTINCT FROM $7::jsonb
+           AND created_by = $8
+           AND created_at > now() - interval '60 seconds'
+           AND status IN ('queued', 'running', 'completed')
+         ORDER BY created_at DESC
+         LIMIT 1`,
+        [
+          parsed.data.scope,
+          parsed.data.scope === "saved" ? null : parsed.data.scopeId,
+          parsed.data.format,
+          fields,
+          parsed.data.sources,
+          parsed.data.insideOnly,
+          selection ? JSON.stringify(selection) : null,
+          request.auth!.displayName,
+        ],
+      );
+      if (duplicate) {
+        return reply.code(200).send(exportDto(duplicate));
+      }
       const row = await one<ExportRow>(
-        `INSERT INTO export_jobs (scope, scope_id, selection, format, fields, sources, created_by)
-         VALUES ($1, $2, $3::jsonb, $4, $5, $6, $7) RETURNING *`,
+        `INSERT INTO export_jobs (scope, scope_id, selection, format, fields, sources, inside_only, created_by)
+         VALUES ($1, $2, $3::jsonb, $4, $5, $6, $7, $8) RETURNING *`,
         [
           parsed.data.scope,
           parsed.data.scope === "saved" ? null : parsed.data.scopeId,
@@ -122,6 +161,7 @@ export async function registerExportRoutes(app: FastifyInstance): Promise<void> 
           parsed.data.format,
           fields,
           parsed.data.sources,
+          parsed.data.insideOnly,
           request.auth!.displayName,
         ],
       );
@@ -221,6 +261,10 @@ export async function registerExportRoutes(app: FastifyInstance): Promise<void> 
     } catch {
       throw new AppError(410, "file_missing", "Export file is no longer available.");
     }
+    await query(
+      "UPDATE export_jobs SET download_count = download_count + 1, last_downloaded_at = now() WHERE id = $1",
+      [row.id],
+    );
     await audit({
       actor: request.auth!.displayName,
       action: "export.downloaded",
@@ -228,9 +272,13 @@ export async function registerExportRoutes(app: FastifyInstance): Promise<void> 
       targetId: row.id,
       ipHash: hashIp(request.ip),
     });
+    const safeName = row.file_name.replaceAll('"', "");
     reply
       .header("Content-Type", "application/zip")
-      .header("Content-Disposition", `attachment; filename="${row.file_name.replaceAll('"', "")}"`)
+      .header(
+        "Content-Disposition",
+        `attachment; filename="${safeName}"; filename*=UTF-8''${encodeURIComponent(safeName)}`,
+      )
       .header("Content-Length", String(fileSize))
       .header("Cache-Control", "no-store, private")
       .header("X-Content-Type-Options", "nosniff");

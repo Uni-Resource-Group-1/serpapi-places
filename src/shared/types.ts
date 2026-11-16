@@ -191,6 +191,8 @@ export interface PlaceReviewPage {
   reviewsEnabled: boolean;
 }
 
+export type AreaCheckKind = "radius" | "bounds" | "polygon";
+
 export interface Place {
   id: string;
   source: Source;
@@ -203,6 +205,13 @@ export interface Place {
   lat: number;
   lon: number;
   distanceMeters: number | null;
+  /**
+   * Whether the run classified this record as inside the selected area.
+   * `null` means the run had no usable geometry (or predates containment
+   * classification), so it must not be treated as "outside".
+   */
+  insideArea: boolean | null;
+  areaCheck: AreaCheckKind | null;
   fields: Record<string, unknown>;
   provenance: Record<string, FieldProvenance>;
   detailsStatus: "not_fetched" | "fetched" | "failed" | "not_available";
@@ -269,6 +278,7 @@ export interface ExportJob {
   format: ExportFormat;
   fields: string[];
   sources: Source[];
+  insideOnly: boolean;
   status: "queued" | "running" | "completed" | "failed" | "expired";
   rowCount: number | null;
   omittedSources: string[];
@@ -276,6 +286,9 @@ export interface ExportJob {
   createdAt: string;
   finishedAt: string | null;
   expiresAt: string | null;
+  fileName: string | null;
+  downloadCount: number;
+  lastDownloadedAt: string | null;
   downloadUrl: string | null;
   manifest: ExportManifest | null;
 }
@@ -367,6 +380,26 @@ export interface AppSettings {
   serpapiMaxPages: number;
   serpapiMaxResults: number;
   serpapiPriceUsd: number;
+}
+
+export type SerpApiCredentialSource = "settings" | "environment" | "none";
+
+export type SerpApiCredentialStatus = "valid" | "invalid" | "unverified" | "unreadable" | "not_configured";
+
+/**
+ * Non-secret view of the active SerpApi credential. The key itself is never
+ * serialized to the browser; only the last four characters are exposed.
+ */
+export interface SerpApiCredentialState {
+  configured: boolean;
+  source: SerpApiCredentialSource;
+  last4: string | null;
+  status: SerpApiCredentialStatus;
+  plan: string | null;
+  searchesLeft: number | null;
+  updatedAt: string | null;
+  updatedBy: string | null;
+  checkedAt: string | null;
 }
 
 export interface DuplicateCandidate {

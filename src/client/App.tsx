@@ -22,7 +22,15 @@ import { ExportModal } from "./components/ExportModal.js";
 import { SettingsModal } from "./components/SettingsModal.js";
 import { SaveSearchModal } from "./components/SaveSearchModal.js";
 import { NoticeBar, Spinner, type Notice, type NoticeKind } from "./components/Feedback.js";
+import { MapPinIcon } from "./components/icons.js";
 import { useFocusTrap } from "./useFocusTrap.js";
+import {
+  containmentCounts,
+  filterAndSortPlaces,
+  mapVisiblePlaces,
+  rankPlaces,
+  type SortKey,
+} from "./place-filters.js";
 
 const CRITERIA_KEY = "pd.criteria.v1";
 
@@ -97,6 +105,9 @@ export function App() {
   const [activeRun, setActiveRun] = useState<SearchRun | null>(null);
   const [places, setPlaces] = useState<Place[]>([]);
   const [placesTotal, setPlacesTotal] = useState(0);
+  /** Shared presentation filters: list rows and map markers stay in sync. */
+  const [showOutside, setShowOutside] = useState(false);
+  const [sortKey, setSortKey] = useState<SortKey>("distance");
   const [loadingPlaces, setLoadingPlaces] = useState(false);
   const [loadingMore, setLoadingMore] = useState(false);
   const [submitting, setSubmitting] = useState(false);
@@ -142,6 +153,18 @@ export function App() {
   const noticeTimer = useRef<number | null>(null);
   const bootRef = useRef(false);
 
+  /**
+   * Editing the pasted links invalidates any previous parse: otherwise the
+   * import could submit references that no longer match what is on screen.
+   * Clearing the refs forces an explicit re-parse before the run can start.
+   */
+  const changeImportText = useCallback((next: string) => {
+    setImportText(next);
+    setImportRefs([]);
+    setImportRejected([]);
+    setCriteria((current) => (current.importRefs?.length ? { ...current, importRefs: [] } : current));
+  }, []);
+
   const notify = useCallback((kind: NoticeKind, message: string) => {
     setNotice({ id: Date.now(), kind, message });
     if (noticeTimer.current) window.clearTimeout(noticeTimer.current);
@@ -155,6 +178,34 @@ export function App() {
     if (activeRun) map.set(activeRun.id, activeRun);
     return [...map.values()].sort((a, b) => b.createdAt.localeCompare(a.createdAt));
   }, [runs, ephemeralRuns, activeRun]);
+
+  const placeContainment = useMemo(() => containmentCounts(places), [places]);
+  // One ordered set feeds both surfaces, so a result's number always matches
+  // its marker and the map never plots outside records while they are hidden.
+  const mapPlaces = useMemo(
+    () =>
+      filterAndSortPlaces(
+        mapVisiblePlaces(places, showOutside, placeContainment),
+        { source: "all", sort: sortKey, text: "", showOutside },
+        placeContainment,
+      ),
+    [places, showOutside, sortKey, placeContainment],
+  );
+  const rankById = useMemo(() => rankPlaces(mapPlaces), [mapPlaces]);
+  const hiddenOutsideCount = !showOutside && placeContainment.classified ? placeContainment.outside : 0;
+
+  // A new run starts from the default presentation.
+  useEffect(() => {
+    setShowOutside(false);
+    setSortKey("distance");
+  }, [activeRun?.id]);
+
+  // Hiding outside records also dismisses details for a place that just left view.
+  useEffect(() => {
+    if (!selectedPlaceId || showOutside) return;
+    const selected = places.find((place) => place.id === selectedPlaceId);
+    if (selected?.insideArea === false) setSelectedPlaceId(null);
+  }, [places, selectedPlaceId, showOutside]);
 
   useEffect(() => {
     const query = window.matchMedia("(max-width: 860px)");
@@ -261,21 +312,22 @@ export function App() {
       runGeneration.current += 1;
       const generation = runGeneration.current;
       activeRunIdRef.current = runId;
-      setPlaces([]);
-      setPlacesTotal(0);
       setSelectedPlaceId(null);
       try {
         const run = await api.run(runId);
         if (generation !== runGeneration.current) return;
         setActiveRun(run);
+        // Only swap the visible results once the target run is confirmed, so a
+        // failed switch leaves the previous run's places on screen instead of a
+        // mysteriously empty list. loadRunPlaces clears the rows itself.
         if (isTerminalRun(run.status)) await loadRunPlaces(run.id);
       } catch (caught) {
         if (generation === runGeneration.current) {
-          notify("error", caught instanceof ApiError ? caught.message : "Could not load that search run.");
+          setRunError(caught instanceof ApiError ? caught.message : "Could not load that search run.");
         }
       }
     },
-    [loadRunPlaces, notify],
+    [loadRunPlaces],
   );
 
   const bootstrap = useCallback(async () => {
@@ -534,7 +586,10 @@ export function App() {
         : null,
       center: boundsCenter(viewportBounds),
     }));
-    if (isMobileViewport()) setMobileView("map");
+    if (isMobileViewport()) setMobileView("list");
+    // The sidebar is the only place with the Run button on mobile, so surface
+    // the search controls rather than leaving the user on a collapsed panel.
+    if (isMobileViewport()) setSearchCollapsed(false);
     notify("info", `Map area selected (≈ ${area.toFixed(1)} km²). Press “Run search”.`);
   };
 
@@ -625,7 +680,7 @@ export function App() {
       <header className="topbar">
         <div className="topbar__brand">
           <span className="brand-mark" aria-hidden="true">
-            ◉
+            <MapPinIcon size={18} />
           </span>
           <div>
             <h1 className="topbar__title">Places Discovery</h1>
@@ -763,7 +818,7 @@ export function App() {
                 importRejected={importRejected}
                 importText={importText}
                 importParsing={importParsing}
-                onImportTextChange={setImportText}
+                onImportTextChange={changeImportText}
                 onParseImports={() => void parseImports()}
                 estimateLoading={estimateLoading}
                 onOpenSettings={() => setSettingsOpen(true)}
@@ -788,6 +843,11 @@ export function App() {
               error={runError}
               pricePerSearchUsd={status?.usage.pricePerSearchUsd}
               selectedId={selectedPlaceId}
+              sortKey={sortKey}
+              onSortChange={setSortKey}
+              showOutside={showOutside}
+              onShowOutsideChange={setShowOutside}
+              rankById={rankById}
               onSelectPlace={(id) => {
                 setSelectedPlaceId(id);
                 if (isMobileViewport()) setMobileView("map");
@@ -798,6 +858,9 @@ export function App() {
                 void loadRunPlaces(activeRun.id, true, places.length);
               }}
               onSwitchRun={(runId) => void selectRun(runId)}
+              onRetryRun={() => {
+                if (activeRun) void selectRun(activeRun.id);
+              }}
               onSavePlace={(place) => void savePlace(place)}
               onRemoveSavedPlace={(place) => void removeSavedPlace(place)}
               onExportRun={() => {
@@ -815,13 +878,17 @@ export function App() {
           {...(narrowViewport && mobileView === "list" ? { inert: true as const, "aria-hidden": true } : {})}
         >
           <MapView
-            places={places}
+            places={mapPlaces}
+            rankById={rankById}
             center={criteria.center}
             radiusMeters={criteria.radiusMeters}
             mode={criteria.mode}
             bounds={criteria.bounds}
             selectedId={selectedPlaceId}
             hoveredId={hoveredId}
+            outsideHiddenCount={hiddenOutsideCount}
+            onShowOutside={() => setShowOutside(true)}
+            loading={loadingPlaces}
             onSelect={(id) => setSelectedPlaceId(id)}
             onMapClick={handleMapClick}
             onViewport={setViewportBounds}
@@ -830,6 +897,7 @@ export function App() {
             tiles={tiles}
             layers={layers}
             onLayersChange={setLayers}
+            onUseMapView={useMapView}
           />
         </section>
 

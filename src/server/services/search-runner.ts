@@ -1,6 +1,6 @@
 import { createHash } from "node:crypto";
-import type { BoundaryPolygon, ImportedPlaceRef, SearchCriteria, Source, SourceError, SourceSummary, CoverageStatus } from "../../shared/types.js";
-import { boundsAreaKm2, haversineMeters } from "../../shared/geo.js";
+import type { BoundaryPolygon, Coordinates, ImportedPlaceRef, SearchCriteria, Source, SourceError, SourceSummary, CoverageStatus } from "../../shared/types.js";
+import { boundsAreaKm2, haversineMeters, pointInBounds, pointInPolygon } from "../../shared/geo.js";
 import { buildTilePlan, tileRequestEstimate } from "../../shared/tiling.js";
 import type { AppConfig } from "../config.js";
 import { one, query } from "../db.js";
@@ -8,9 +8,9 @@ import { SourceError as SourceFailure, errorMessage } from "../errors.js";
 import { audit } from "./audit.js";
 import { findAndRecordMatch } from "./matching.js";
 import { reserveSerpApiCalls } from "./usage.js";
-import { addRunPlace, saveSourcePlace } from "./repository.js";
+import { addRunPlace, saveSourcePlace, type RunPlaceContainment } from "./repository.js";
 import { buildOverpassQuery, searchOsm } from "../sources/osm.js";
-import { buildSerpApiSearchParams, searchSerpApiPage } from "../sources/serpapi.js";
+import { buildSerpApiSearchParams, getSerpApiDetails, searchSerpApiPage } from "../sources/serpapi.js";
 import { resolveBoundary } from "../geo/boundary.js";
 import type { ParsedPlace, OsmSearchResult, SourceSearchPage, ParseRejections } from "../sources/types.js";
 import { logger } from "../logger.js";
@@ -23,12 +23,13 @@ interface SourceRequestRow { id: string; }
 export interface SearchRunnerDeps {
   searchOsm: typeof searchOsm;
   searchSerpApiPage: typeof searchSerpApiPage;
+  getSerpApiDetails: typeof getSerpApiDetails;
   saveSourcePlace: typeof saveSourcePlace;
   addRunPlace: typeof addRunPlace;
   findAndRecordMatch: typeof findAndRecordMatch;
   resolveBoundary: typeof resolveBoundary;
 }
-const defaultDeps: SearchRunnerDeps = { searchOsm, searchSerpApiPage, saveSourcePlace, addRunPlace, findAndRecordMatch, resolveBoundary };
+const defaultDeps: SearchRunnerDeps = { searchOsm, searchSerpApiPage, getSerpApiDetails, saveSourcePlace, addRunPlace, findAndRecordMatch, resolveBoundary };
 function fingerprint(value: unknown): string { return createHash("sha256").update(JSON.stringify(value)).digest("hex"); }
 function sourceLabel(source: Source): string { return source === "osm" ? "OpenStreetMap" : "SerpApi Google Maps"; }
 function emptyExclusions(): NonNullable<SourceSummary["exclusions"]> { return { missingCoordinates: 0, invalidRecord: 0, outsideArea: 0, outsidePolygon: 0 }; }
@@ -64,7 +65,7 @@ function caveatsFor(criteria: SearchCriteria, errors: SourceError[], truncated: 
         caveats.push(`${sourceLabel(summary.source)} used ${detail} to search, but all valid returned records are retained even when outside those bounds.`);
       } else if (summary.boundaryPrecision === "radius") caveats.push(`${sourceLabel(summary.source)} used an approximate ${criteria.radiusMeters / 1000} km center radius to search because no usable boundary box was available. All valid returned records are retained.`);
     }
-    if (criteria.sources.includes("serpapi")) caveats.push("SerpApi cannot query a polygon directly: its map-center search samples the selected area. Returned records are not discarded by post-search area or polygon filters, but the provider may omit places.");
+    if (criteria.sources.includes("serpapi")) caveats.push("SerpApi cannot query a polygon directly: its map-center search samples the selected area. Returned records are retained even when they fall outside the selected area; those rows are marked and hidden by the default list filter, but the provider may still omit places.");
   }
   if (criteria.sources.includes("serpapi")) caveats.push("SerpApi returns ranked map results, not a complete inventory. A run can end within its configured limits and still omit places; narrowing the area may improve discovery, but extra requests require deliberate budget approval.");
   if (criteria.plan === "tiled") caveats.push(`This tiled run divided the rectangle into ${criteria.tiling?.tileCount ?? "multiple"} grid cells with up to ${criteria.tiling?.maxPagesPerTile ?? 1} SerpApi page${(criteria.tiling?.maxPagesPerTile ?? 1) === 1 ? "" : "s"} per cell. Each cell is sampled, not exhaustively enumerated, and the combined coverage remains capped.`);
@@ -89,6 +90,35 @@ function summary(source: Source, status: SourceSummary["status"] = "ok"): Source
 function getBoundaryPrecision(criteria: SearchCriteria): SourceSummary["boundaryPrecision"] {
   if (criteria.mode !== "boundary") return "not_applicable";
   return criteria.boundaryResolution?.precision ?? (criteria.bounds ? "bbox" : "radius");
+}
+
+/**
+ * Build the containment classifier for a run. It never removes a record; it
+ * only labels whether a returned place sits inside the geometry the operator
+ * selected so the list and exports can hide outside rows by default.
+ *
+ * Returns null when the run has no usable geometry (for example a known-place
+ * import), in which case `inside_area` stays NULL and consumers must treat the
+ * verdict as unknown.
+ */
+function buildContainment(
+  criteria: SearchCriteria,
+  polygon: BoundaryPolygon | null,
+): ((point: Coordinates) => RunPlaceContainment) | null {
+  if (criteria.plan === "import") return null;
+  if (criteria.mode === "boundary" && polygon) {
+    return (point) => ({ insideArea: pointInPolygon(point, polygon), areaCheck: "polygon" });
+  }
+  if (criteria.bounds) {
+    const bounds = criteria.bounds;
+    return (point) => ({ insideArea: pointInBounds(point, bounds), areaCheck: "bounds" });
+  }
+  if (criteria.center && criteria.radiusMeters > 0) {
+    const center = criteria.center;
+    const radiusMeters = criteria.radiusMeters;
+    return (point) => ({ insideArea: haversineMeters(center, point) <= radiusMeters, areaCheck: "radius" });
+  }
+  return null;
 }
 
 export async function executeSearchRun(runId: string, appConfig: AppConfig, deps: SearchRunnerDeps = defaultDeps): Promise<void> {
@@ -139,6 +169,7 @@ export async function executeSearchRun(runId: string, appConfig: AppConfig, deps
         for (const source of run.sources) summaries.push({ ...summary(source, "error"), error: "No location-based search could be performed.", stopReason: "source_error" });
       }
     }
+    const containmentFor = buildContainment(criteria, polygon);
     for (const source of run.sources) {
       if (boundaryUnavailable) break;
       const current = summary(source, boundaryTooLarge ? "error" : "ok");
@@ -167,7 +198,8 @@ export async function executeSearchRun(runId: string, appConfig: AppConfig, deps
           for (const place of result.places) {
             const distance = criteria.center ? haversineMeters(criteria.center, { lat: place.lat, lon: place.lon }) : null;
             const record = await deps.saveSourcePlace(place, appConfig);
-            const inserted = await deps.addRunPlace(runId, record.id, distance, current.kept + 1);
+            const containment = containmentFor?.({ lat: place.lat, lon: place.lon }) ?? null;
+            const inserted = await deps.addRunPlace(runId, record.id, distance, current.kept + 1, containment);
             await deps.findAndRecordMatch(record.id);
             if (!inserted) current.duplicates++;
             else current.kept++;
@@ -186,7 +218,72 @@ export async function executeSearchRun(runId: string, appConfig: AppConfig, deps
       }
 
       let page = 1;
-      const seen = new Set<string>();
+
+      // Known-place imports resolve each supplied Google reference through a
+      // single SerpApi place-details request. They must never fall through to
+      // the ranked search loop, which would return unrelated places.
+      if (criteria.plan === "import") {
+        const refs: ImportedPlaceRef[] = criteria.importRefs ?? [];
+        const importBudget = await reserveSerpApiCalls(refs.length, appConfig);
+        if (!importBudget.allowed) {
+          current.status = "error";
+          current.stopReason = "budget_limit";
+          current.error = importBudget.reason === "daily" ? "The daily SerpApi budget is exhausted." : "The monthly SerpApi budget is exhausted.";
+          errors.push({ source, code: "budget_limit", message: current.error });
+          continue;
+        }
+        for (const ref of refs) {
+          const label = `import-${ref.kind}`;
+          const sanitizedParams = { engine: "google_maps", type: "place", [ref.kind]: ref.value };
+          const requestId = await startRequest(runId, source, page, fingerprint(sanitizedParams), { ...sanitizedParams, query: label }, 1);
+          const began = Date.now();
+          current.requests++;
+          current.pages++;
+          current.creditsEstimated++;
+          current.creditsActual++;
+          try {
+            const details = await deps.getSerpApiDetails({ [ref.kind]: ref.value }, appConfig);
+            if (!details.name || details.lat === null || details.lon === null) {
+              current.filteredOut++;
+              errors.push({ source, code: "import_unusable", message: `${ref.kind} ${ref.value} resolved without a name or coordinates.` });
+              await finishRequest(requestId, { status: "success", resultCount: 1, keptCount: current.kept, filteredCount: current.filteredOut, creditsActual: 1, durationMs: Date.now() - began });
+              page++;
+              continue;
+            }
+            const parsed: ParsedPlace = {
+              source: "serpapi",
+              sourceType: `google_maps_${ref.kind}`,
+              sourceId: `${ref.kind}:${ref.value}`,
+              sourceUrl: ref.kind === "place_id"
+                ? `https://www.google.com/maps/place/?q=place_id:${encodeURIComponent(ref.value)}`
+                : null,
+              name: details.name,
+              address: details.address,
+              category: details.category,
+              lat: details.lat,
+              lon: details.lon,
+              fields: { ...details.fields, [ref.kind]: ref.value },
+              provenance: details.provenance,
+              detailsStatus: "fetched",
+            };
+            const record = await deps.saveSourcePlace(parsed, appConfig);
+            const inserted = await deps.addRunPlace(runId, record.id, null, current.kept + 1, null);
+            await deps.findAndRecordMatch(record.id);
+            current.results++;
+            if (!inserted) current.duplicates++;
+            else current.kept++;
+            await finishRequest(requestId, { status: "success", resultCount: 1, keptCount: current.kept, duplicateCount: current.duplicates, creditsActual: 1, durationMs: Date.now() - began });
+          } catch (error) {
+            const failure = error instanceof SourceFailure ? error : new SourceFailure("source_error", errorMessage(error));
+            current.filteredOut++;
+            errors.push({ source, code: failure.code, message: `${ref.kind} ${ref.value}: ${failure.message}`, retryable: failure.retryable });
+            await finishRequest(requestId, { status: "error", errorCode: failure.code, errorMessage: failure.message, creditsActual: 1, durationMs: Date.now() - began });
+          }
+          page++;
+        }
+        continue;
+      }
+
       const tileResult = criteria.plan === "tiled" && criteria.bounds ? buildTilePlan(criteria.bounds, {
         maxTileAreaKm2: appConfig.limits.maxAreaKm2, maxTiledAreaKm2: appConfig.limits.maxTiledAreaKm2,
         maxTiles: appConfig.limits.maxTilesPerRun, columns: criteria.tiling?.columns, rows: criteria.tiling?.rows,
@@ -194,13 +291,18 @@ export async function executeSearchRun(runId: string, appConfig: AppConfig, deps
       const tilePlan = tileResult?.ok ? tileResult.plan.tiles : [];
       if (tileResult && !tileResult.ok) throw new Error(tileResult.message);
       const queries = criteria.plan === "tiled" && tilePlan.length ? tilePlan.map((tile) => ({ criteria: { ...criteria, center: tile.center, bounds: tile.bounds, radiusMeters: 0 }, label: `tile-${tile.index}` })) : [{ criteria, label: "standard" }];
-      const importRefs: ImportedPlaceRef[] = criteria.plan === "import" ? criteria.importRefs ?? [] : [];
-      const estimatedCalls = criteria.plan === "import" ? importRefs.length : criteria.plan === "tiled" ? tileRequestEstimate(queries.length, criteria.tiling?.maxPagesPerTile ?? 1) : maxPages;
+      // Per-tile page budgets belong to the tiling plan, not the run-wide cap.
+      const pagesPerQuery = criteria.plan === "tiled"
+        ? Math.max(1, Math.min(criteria.tiling?.maxPagesPerTile ?? 1, maxPages))
+        : maxPages;
+      const estimatedCalls = criteria.plan === "tiled" ? tileRequestEstimate(queries.length, pagesPerQuery) : maxPages;
       const serpBudget = await reserveSerpApiCalls(estimatedCalls, appConfig);
       let callCount = 0;
       for (const item of queries) {
-        let queryPage = 1;
-        while (queryPage <= maxPages && current.results < maxResults) {
+        // SerpApi pagination is zero-based: start=0 is the first result page.
+        let queryPage = 0;
+        const seen = new Set<string>();
+        while (queryPage < pagesPerQuery && current.results < maxResults) {
           if (callCount >= estimatedCalls) break;
           const params = buildSerpApiSearchParams(item.criteria, queryPage, appConfig);
           const sanitizedParams = Object.fromEntries(params.entries());
@@ -213,10 +315,11 @@ export async function executeSearchRun(runId: string, appConfig: AppConfig, deps
             for (const place of result.places) {
               const distance = item.criteria.center ? haversineMeters(item.criteria.center, { lat: place.lat, lon: place.lon }) : null;
               const record = await deps.saveSourcePlace(place, appConfig);
-              const inserted = await deps.addRunPlace(runId, record.id, distance, current.kept + 1);
-              const matched = await deps.findAndRecordMatch(record.id);
-              if (matched) current.duplicates++;
-              if (inserted) current.kept++;
+              const containment = containmentFor?.({ lat: place.lat, lon: place.lon }) ?? null;
+              const inserted = await deps.addRunPlace(runId, record.id, distance, current.kept + 1, containment);
+              await deps.findAndRecordMatch(record.id);
+              if (!inserted) current.duplicates++;
+              else current.kept++;
             }
             current.filteredOut += exclusions.missingCoordinates + exclusions.invalidRecord;
             current.exclusions = addExclusions(current.exclusions ?? emptyExclusions(), exclusions);

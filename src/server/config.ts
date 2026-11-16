@@ -7,6 +7,8 @@ export interface AppConfig {
   appOrigin: string;
   databaseUrl: string;
   accessKey: string;
+  /** Secret used to encrypt operator-managed credentials at rest. */
+  secretsKey: string;
   cookieSecure: boolean;
   sessionDays: number;
   maxActiveSessions: number;
@@ -112,6 +114,7 @@ export function loadConfig(env: NodeJS.ProcessEnv = process.env): AppConfig {
     appOrigin: env.APP_ORIGIN?.trim() || "http://localhost:5173",
     databaseUrl,
     accessKey,
+    secretsKey: env.SETTINGS_ENCRYPTION_KEY?.trim() || accessKey,
     cookieSecure: bool(env.COOKIE_SECURE, envValue === "production"),
     sessionDays: int(env.SESSION_DAYS, 30, "SESSION_DAYS"),
     maxActiveSessions: int(env.MAX_ACTIVE_SESSIONS, 5, "MAX_ACTIVE_SESSIONS"),

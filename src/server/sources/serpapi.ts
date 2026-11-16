@@ -4,6 +4,7 @@ import type { SearchCriteria } from "../../shared/types.js";
 import { boundsCenter, zoomForBounds, zoomForRadius } from "../../shared/geo.js";
 import type { AppConfig } from "../config.js";
 import { SourceError } from "../errors.js";
+import { resolveSerpApiKey } from "../services/serpapi-credentials.js";
 import { requestJson } from "./http.js";
 import type {
   ParseRejections,
@@ -282,14 +283,15 @@ export async function searchSerpApiPage(
   page: number,
   appConfig: AppConfig,
 ): Promise<SourceSearchPage> {
-  if (!appConfig.serpapi.apiKey) {
+  const apiKey = await resolveSerpApiKey(appConfig);
+  if (!apiKey) {
     throw new SourceError("not_configured", "SerpApi is not configured on this server");
   }
   const params = buildSerpApiSearchParams(criteria, page, appConfig);
   const sanitizedParams = Object.fromEntries(params.entries());
   const url = new URL(appConfig.serpapi.baseUrl);
   for (const [key, value] of params.entries()) url.searchParams.set(key, value);
-  url.searchParams.set("api_key", appConfig.serpapi.apiKey);
+  url.searchParams.set("api_key", apiKey);
 
   const response = await requestJson(url.toString(), {
     headers: { Accept: "application/json", "User-Agent": "PlacesDiscovery/1.0" },
@@ -378,7 +380,8 @@ export async function getSerpApiDetails(
   fields: Record<string, unknown>,
   appConfig: AppConfig,
 ): Promise<SerpApiDetailsResult> {
-  if (!appConfig.serpapi.apiKey) {
+  const apiKey = await resolveSerpApiKey(appConfig);
+  if (!apiKey) {
     throw new SourceError("not_configured", "SerpApi is not configured on this server");
   }
   const placeId = asString(fields.place_id);
@@ -400,7 +403,7 @@ export async function getSerpApiDetails(
   }
   const url = new URL(appConfig.serpapi.baseUrl);
   for (const [key, value] of params.entries()) url.searchParams.set(key, value);
-  url.searchParams.set("api_key", appConfig.serpapi.apiKey);
+  url.searchParams.set("api_key", apiKey);
   const response = await requestJson(url.toString(), {
     headers: { Accept: "application/json", "User-Agent": "PlacesDiscovery/1.0" },
     timeoutMs: appConfig.serpapi.timeoutMs,
@@ -438,7 +441,8 @@ export async function getSerpApiReviews(
   nextPageToken: string | null,
   appConfig: AppConfig,
 ): Promise<SerpApiReviewsResult> {
-  if (!appConfig.serpapi.apiKey) {
+  const apiKey = await resolveSerpApiKey(appConfig);
+  if (!apiKey) {
     throw new SourceError("not_configured", "SerpApi is not configured on this server");
   }
   const dataId = asString(fields.data_id);
@@ -452,7 +456,7 @@ export async function getSerpApiReviews(
   if (nextPageToken) params.set("next_page_token", nextPageToken);
   const url = new URL(appConfig.serpapi.baseUrl);
   for (const [key, value] of params.entries()) url.searchParams.set(key, value);
-  url.searchParams.set("api_key", appConfig.serpapi.apiKey);
+  url.searchParams.set("api_key", apiKey);
   const response = await requestJson(url.toString(), {
     headers: { Accept: "application/json", "User-Agent": "PlacesDiscovery/1.0" },
     timeoutMs: appConfig.serpapi.timeoutMs,

@@ -6,6 +6,13 @@ import { AppError } from "../errors.js";
 import { audit } from "../services/audit.js";
 import { hashIp } from "../auth-crypto.js";
 import { getSettings, getUsage, updateSettings } from "../services/usage.js";
+import {
+  clearSerpApiKey,
+  getSerpApiCredentialState,
+  resolveSerpApiKey,
+  saveSerpApiKey,
+  verifySerpApiKey,
+} from "../services/serpapi-credentials.js";
 
 const settingsSchema = z.object({
   serpapiMonthlyLimit: z.number().int().min(0).max(10_000),
@@ -14,6 +21,14 @@ const settingsSchema = z.object({
   serpapiMaxResults: z.number().int().min(20).max(2000),
   serpapiPriceUsd: z.number().min(0).max(100),
 });
+
+const serpApiKeySchema = z.object({
+  apiKey: z.string().trim().min(16).max(128),
+}).strict();
+
+const serpApiKeyTestSchema = z.object({
+  apiKey: z.string().trim().min(16).max(128).optional(),
+}).strict();
 
 export async function registerSystemRoutes(app: FastifyInstance): Promise<void> {
   app.get("/api/status", { preHandler: authenticate }, async () => {
@@ -29,7 +44,7 @@ export async function registerSystemRoutes(app: FastifyInstance): Promise<void> 
           attribution: "© OpenStreetMap contributors · ODbL",
         },
         serpapi: {
-          configured: Boolean(config.serpapi.apiKey),
+          configured: Boolean(await resolveSerpApiKey(config)),
           reviewsEnabled: config.serpapi.reviewsEnabled,
           exportEnabled: config.serpapi.exportEnabled,
           label: "SerpApi Google Maps",
@@ -56,10 +71,15 @@ export async function registerSystemRoutes(app: FastifyInstance): Promise<void> 
   app.get("/api/usage", { preHandler: authenticate }, async () => getUsage(config));
 
   app.get("/api/settings", { preHandler: authenticate }, async () => {
-    const [settings, usage] = await Promise.all([getSettings(config), getUsage(config)]);
+    const [settings, usage, serpapiCredential] = await Promise.all([
+      getSettings(config),
+      getUsage(config),
+      getSerpApiCredentialState(config),
+    ]);
     return {
       settings,
       usage,
+      serpapiCredential,
       hardLimits: {
         monthly: config.limits.monthlyHardLimit,
         daily: config.limits.dailyHardLimit,
@@ -107,6 +127,75 @@ export async function registerSystemRoutes(app: FastifyInstance): Promise<void> 
       } catch (error) {
         throw new AppError(400, "invalid_settings", error instanceof Error ? error.message : "Invalid settings.");
       }
+    },
+  );
+
+  app.put(
+    "/api/settings/serpapi-key",
+    { preHandler: [authenticate, requireCsrf], config: { rateLimit: { max: 5, timeWindow: "1 minute" } } },
+    async (request) => {
+      checkOrigin(request);
+      const parsed = serpApiKeySchema.safeParse(request.body);
+      if (!parsed.success) {
+        throw new AppError(400, "invalid_serpapi_key", "Enter a single SerpApi key without spaces or punctuation.");
+      }
+      const { state, verification } = await saveSerpApiKey(
+        parsed.data.apiKey,
+        request.auth!.displayName,
+        config,
+      );
+      await audit({
+        actor: request.auth!.displayName,
+        action: "settings.serpapi_key.updated",
+        targetType: "settings",
+        targetId: "1",
+        ipHash: hashIp(request.ip),
+        metadata: { last4: state.last4, source: state.source, plan: verification.plan },
+      });
+      return { credential: state, verification };
+    },
+  );
+
+  app.delete(
+    "/api/settings/serpapi-key",
+    { preHandler: [authenticate, requireCsrf], config: { rateLimit: { max: 5, timeWindow: "1 minute" } } },
+    async (request) => {
+      checkOrigin(request);
+      const credential = await clearSerpApiKey(request.auth!.displayName, config);
+      await audit({
+        actor: request.auth!.displayName,
+        action: "settings.serpapi_key.cleared",
+        targetType: "settings",
+        targetId: "1",
+        ipHash: hashIp(request.ip),
+        metadata: { source: credential.source },
+      });
+      return { credential };
+    },
+  );
+
+  app.post(
+    "/api/settings/serpapi-key/test",
+    { preHandler: [authenticate, requireCsrf], config: { rateLimit: { max: 6, timeWindow: "1 minute" } } },
+    async (request) => {
+      checkOrigin(request);
+      const parsed = serpApiKeyTestSchema.safeParse(request.body ?? {});
+      if (!parsed.success) {
+        throw new AppError(400, "invalid_serpapi_key", "Enter a single SerpApi key without spaces or punctuation.");
+      }
+      const provided = parsed.data.apiKey?.trim();
+      const key = provided || (await resolveSerpApiKey(config));
+      if (!key) throw new AppError(409, "not_configured", "No SerpApi key is configured.");
+      const verification = await verifySerpApiKey(key, config);
+      await audit({
+        actor: request.auth!.displayName,
+        action: "settings.serpapi_key.tested",
+        targetType: "settings",
+        targetId: "1",
+        ipHash: hashIp(request.ip),
+        metadata: { ok: verification.ok, plan: verification.plan, usedProvidedKey: Boolean(provided) },
+      });
+      return { verification };
     },
   );
 }

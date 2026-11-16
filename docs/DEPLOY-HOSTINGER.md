@@ -56,6 +56,7 @@ cd serpapi-places
 cp .env.example .env
 openssl rand -base64 32     # -> APP_ACCESS_KEY
 openssl rand -hex 24        # -> POSTGRES_PASSWORD (alphanumeric, URL-safe)
+openssl rand -hex 32        # -> SETTINGS_ENCRYPTION_KEY
 ```
 
 Edit `.env` and set at minimum:
@@ -63,7 +64,8 @@ Edit `.env` and set at minimum:
 ```dotenv
 APP_ACCESS_KEY=<generated>
 POSTGRES_PASSWORD=<generated>
-SERPAPI_API_KEY=<your SerpApi key>
+SETTINGS_ENCRYPTION_KEY=<generated>
+SERPAPI_API_KEY=<your SerpApi key, or leave empty and save it in Settings>
 
 APP_ORIGIN=https://serpapiplaces.dhakafareast.tech
 APP_HOST=serpapiplaces.dhakafareast.tech
@@ -163,6 +165,7 @@ Docker Manager's **Compose from URL** pulls only the Compose file, but this proj
 ## Security checklist before going live
 
 - [ ] `APP_ACCESS_KEY` is long and random; it is the only login.
+- [ ] `SETTINGS_ENCRYPTION_KEY` is set and backed up; without it, a key saved in Settings cannot be decrypted after rotation.
 - [ ] `POSTGRES_PASSWORD` is random; the database is not published to the host.
 - [ ] `.env` is `chmod 600` and not in Git.
 - [ ] The retired `GOOGLE_PLACES_*` variables are absent; that API key is revoked.

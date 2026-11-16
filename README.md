@@ -9,14 +9,14 @@ Self-hosted places research workspace combining **OpenStreetMap (Overpass)** wit
 - Global geography cascade: country → region/state → county/district → city, backed by the bundled GeoNames dataset (no external geocoder).
 - Three search scopes: radius in **kilometres** around a draggable map center (or any selected result via “Search around this place”), the selected region/county/city boundary when mapped in OSM, or the current map rectangle.
 - When a matching OSM administrative relation exists, boundary searches use its real polygon for OSM. SerpApi has no polygon search, so it samples around the boundary center and filters to the boundary's bounding box — the run caveat states this explicitly.
-- Separate OSM and SerpApi pin/cluster shapes with keyboard-focusable markers, card/marker sync, source filters, sorting, and fit-to-loaded-results. Card filters operate on loaded results independently of map layers.
+- Separate OSM and SerpApi pin/cluster shapes with keyboard-focusable, numbered markers, card/marker sync, source filters, sorting, and fit-to-loaded-results. Each marker is a category pin (food, lodging, outdoors, health, education/culture, services, shopping, or a plain pin) carrying a small numbered badge on its shoulder; the number matches the list row, marker tooltip, and aria-label. Outside-area records stay in the run but are hidden from both the list and the map until you opt in with the shared “Show outside” toggle; source and text filters still operate on loaded results independently of map layers.
 - Real distance and bounding-box filtering after each source responds, with filtered-out and duplicate counts reported per source.
 - SerpApi pagination caps, daily/monthly budget reservations, duplicate-page detection, and partial-failure reporting.
 - On-demand SerpApi place details using `place_id` (never automatically per marker).
 - Explicit opt-in tiled SerpApi discovery with a bounded estimate/confirmation step; each cell is a separately queued run.
 - Google Maps URL/place-ID imports resolved through SerpApi, plus OpenStreetMap discovery.
 - Source-reported review totals are shown separately from stored review counts. Reviews are opt-in per view, budget-counted and temporarily retained; “Load available pages” follows pagination for at most 5 requests per click (20 pages maximum). It cannot promise all source reviews. Review text/authors are never exported.
-- Persistent PostgreSQL storage, migration runner, saved searches with optional auto-refresh, saved places, collections, and conservative cross-source duplicate review with undo.
+- Persistent PostgreSQL storage, migration runner, saved searches with optional auto-refresh, saved places, collections, and conservative cross-source duplicate review with undo. Saved places can be removed per item, in bulk from a selection, or in full from the Saved places tab (all, or just the current filter). By default a removal only drops the saved snapshot, so the source record and its run results stay; an explicit “delete the source record” opt-in removes the place from results too. A collection can be emptied without deleting its saved places, and results cards and the details panel can unsave directly.
 - Export jobs producing a ZIP with the data file (`csv`, `xlsx`, `geojson`, or `json`), `manifest.json`, and `ATTRIBUTION.txt`. CSV and Excel cells are protected against formula execution and GeoJSON coordinates are validated. Run migrations before using XLSX on existing installations.
 - Single shared access key with named sessions, HTTP-only cookies, CSRF tokens, and a five-session cap.
 - Server-side credentials: the SerpApi key is never sent to the browser.
@@ -90,7 +90,7 @@ npm run test:db    # requires RUN_DB_TESTS=1 and TEST_DATABASE_URL
 
 ## Configuration
 
-All credentials and policy flags live in the server environment. See [`.env.example`](.env.example) for the complete list.
+All credentials and policy flags live in the server environment. The SerpApi key can also be saved from **Settings**, encrypted at rest with `SETTINGS_ENCRYPTION_KEY`; the environment value remains the fallback. See [`.env.example`](.env.example) for the complete list.
 
 Key defaults:
 
@@ -112,7 +112,7 @@ The API rejects values above the hard caps even if they are submitted directly. 
 
 The stack is designed to sit behind an existing Traefik instance without changing it. For a Hostinger VPS walkthrough (DNS, `.env`, TLS, verification), see [`docs/DEPLOY-HOSTINGER.md`](docs/DEPLOY-HOSTINGER.md).
 
-1. Copy `.env.example` to `.env`, set `APP_ACCESS_KEY`, `POSTGRES_PASSWORD`, `SERPAPI_API_KEY`, `APP_ORIGIN`, `APP_HOST`, and the Traefik values.
+1. Copy `.env.example` to `.env`, set `APP_ACCESS_KEY`, `POSTGRES_PASSWORD`, `SERPAPI_API_KEY` (or leave it empty and enter the key in Settings after first sign-in), `SETTINGS_ENCRYPTION_KEY`, `APP_ORIGIN`, `APP_HOST`, and the Traefik values.
 2. Confirm the external Traefik network name (`TRAEFIK_NETWORK`, default `traefik`) and cert resolver (`TRAEFIK_CERT_RESOLVER`, default `letsencrypt`).
 3. Build and start only this project's services:
 

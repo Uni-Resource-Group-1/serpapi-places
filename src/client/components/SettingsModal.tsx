@@ -1,5 +1,5 @@
 import { useEffect, useState, type FormEvent } from "react";
-import type { AppSettings } from "../../shared/types.js";
+import type { AppSettings, SerpApiCredentialState } from "../../shared/types.js";
 import { api, ApiError, type SettingsPayload } from "../api.js";
 import { formatDateTime, formatUsd, percent } from "../format.js";
 import { Modal } from "./Modal.js";
@@ -11,11 +11,36 @@ interface SettingsModalProps {
   onNotify: (kind: "info" | "success" | "error", message: string) => void;
 }
 
+function credentialStatusLabel(credential: SerpApiCredentialState): string {
+  switch (credential.status) {
+    case "valid":
+      return "Verified and working";
+    case "invalid":
+      return "Rejected by SerpApi";
+    case "unreadable":
+      return "Stored key cannot be decrypted. Re-enter it.";
+    case "not_configured":
+      return "No key configured";
+    default:
+      return "Saved, not verified yet";
+  }
+}
+
+function credentialSourceLabel(credential: SerpApiCredentialState): string {
+  if (credential.source === "settings") return "Saved in Settings";
+  if (credential.source === "environment") return "Server environment variable";
+  return "Not set";
+}
+
 export function SettingsModal({ onClose, onSaved, onNotify }: SettingsModalProps) {
   const [payload, setPayload] = useState<SettingsPayload | null>(null);
   const [form, setForm] = useState<AppSettings | null>(null);
   const [error, setError] = useState<string | null>(null);
   const [busy, setBusy] = useState(false);
+  const [keyInput, setKeyInput] = useState("");
+  const [keyBusy, setKeyBusy] = useState<"save" | "test" | "clear" | null>(null);
+  const [keyError, setKeyError] = useState<string | null>(null);
+  const [keyMessage, setKeyMessage] = useState<string | null>(null);
 
   useEffect(() => {
     let cancelled = false;
@@ -43,6 +68,74 @@ export function SettingsModal({ onClose, onSaved, onNotify }: SettingsModalProps
   const update = (key: keyof AppSettings, value: number) => {
     if (!form) return;
     setForm({ ...form, [key]: Number.isFinite(value) ? value : 0 });
+  };
+
+  const saveKey = async () => {
+    const candidate = keyInput.trim();
+    if (!candidate) {
+      setKeyError("Enter the SerpApi key you want to save.");
+      return;
+    }
+    setKeyBusy("save");
+    setKeyError(null);
+    setKeyMessage(null);
+    try {
+      const result = await api.saveSerpApiKey(candidate);
+      setPayload((current) => (current ? { ...current, serpapiCredential: result.credential } : current));
+      setKeyInput("");
+      setKeyMessage(result.verification.message);
+      onNotify("success", result.verification.message);
+      onSaved();
+    } catch (caught) {
+      setKeyError(caught instanceof ApiError ? caught.message : "Could not save the SerpApi key.");
+    } finally {
+      setKeyBusy(null);
+    }
+  };
+
+  const testKey = async () => {
+    setKeyBusy("test");
+    setKeyError(null);
+    setKeyMessage(null);
+    try {
+      const candidate = keyInput.trim();
+      const result = await api.testSerpApiKey(candidate || undefined);
+      if (result.verification.ok) {
+        setKeyMessage(
+          candidate
+            ? `${result.verification.message} Save it to start using it.`
+            : result.verification.message,
+        );
+        onNotify("success", result.verification.message);
+      } else {
+        setKeyError(result.verification.message);
+      }
+    } catch (caught) {
+      setKeyError(caught instanceof ApiError ? caught.message : "Could not test the SerpApi key.");
+    } finally {
+      setKeyBusy(null);
+    }
+  };
+
+  const clearKey = async () => {
+    setKeyBusy("clear");
+    setKeyError(null);
+    setKeyMessage(null);
+    try {
+      const result = await api.clearSerpApiKey();
+      setPayload((current) => (current ? { ...current, serpapiCredential: result.credential } : current));
+      setKeyMessage(
+        result.credential.source === "environment"
+          ? "Stored key removed. The server environment key is active again."
+          : "Stored key removed. SerpApi is no longer configured until a key is saved.",
+      );
+      onNotify("info", "Stored SerpApi key removed.");
+      onSaved();
+    } catch (caught) {
+      setKeyError(caught instanceof ApiError ? caught.message : "Could not remove the stored key.");
+    } finally {
+      setKeyBusy(null);
+    }
   };
 
   const submit = async (event: FormEvent) => {
@@ -98,6 +191,108 @@ export function SettingsModal({ onClose, onSaved, onNotify }: SettingsModalProps
         )
       ) : (
         <form onSubmit={submit} className="settings-form" noValidate>
+          <section className="settings-section" aria-labelledby="credential-heading">
+            <h3 id="credential-heading">SerpApi key</h3>
+            <dl className="policy-list">
+              <div>
+                <dt>Status</dt>
+                <dd>{credentialStatusLabel(payload.serpapiCredential)}</dd>
+              </div>
+              <div>
+                <dt>Source</dt>
+                <dd>{credentialSourceLabel(payload.serpapiCredential)}</dd>
+              </div>
+              <div>
+                <dt>Key</dt>
+                <dd>
+                  {payload.serpapiCredential.configured && payload.serpapiCredential.last4
+                    ? `••••${payload.serpapiCredential.last4}`
+                    : "Not configured"}
+                </dd>
+              </div>
+              {payload.serpapiCredential.plan || payload.serpapiCredential.searchesLeft !== null ? (
+                <div>
+                  <dt>SerpApi account</dt>
+                  <dd>
+                    {payload.serpapiCredential.plan ?? "Unknown plan"}
+                    {payload.serpapiCredential.searchesLeft !== null
+                      ? ` · ${payload.serpapiCredential.searchesLeft} searches left`
+                      : ""}
+                  </dd>
+                </div>
+              ) : null}
+              <div>
+                <dt>Last changed</dt>
+                <dd>
+                  {payload.serpapiCredential.updatedAt
+                    ? `${formatDateTime(payload.serpapiCredential.updatedAt)}${
+                        payload.serpapiCredential.updatedBy
+                          ? ` by ${payload.serpapiCredential.updatedBy}`
+                          : ""
+                      }`
+                    : "Never changed from this screen"}
+                  {payload.serpapiCredential.checkedAt
+                    ? ` · checked ${formatDateTime(payload.serpapiCredential.checkedAt)}`
+                    : ""}
+                </dd>
+              </div>
+            </dl>
+
+            <div className="field">
+              <label htmlFor="serpapi-key">New SerpApi key</label>
+              <input
+                id="serpapi-key"
+                type="password"
+                autoComplete="off"
+                spellCheck={false}
+                placeholder="Paste a key from serpapi.com/manage-api-key"
+                value={keyInput}
+                onChange={(event) => setKeyInput(event.target.value)}
+              />
+              <p className="field__hint">
+                Saving verifies the key with SerpApi before storing it encrypted. The browser never receives the stored
+                value again, only its last four characters.
+              </p>
+            </div>
+            <div className="inline-control">
+              <button
+                type="button"
+                className="button button--primary button--small"
+                onClick={() => void saveKey()}
+                disabled={keyBusy !== null || keyInput.trim().length === 0}
+              >
+                {keyBusy === "save" ? "Saving…" : "Save key"}
+              </button>
+              <button
+                type="button"
+                className="button button--secondary button--small"
+                onClick={() => void testKey()}
+                disabled={keyBusy !== null}
+              >
+                {keyBusy === "test" ? "Testing…" : "Test key"}
+              </button>
+              {payload.serpapiCredential.source === "settings" ? (
+                <button
+                  type="button"
+                  className="button button--ghost button--small job-item__delete"
+                  onClick={() => void clearKey()}
+                  disabled={keyBusy !== null}
+                >
+                  {keyBusy === "clear" ? "Removing…" : "Revert to environment"}
+                </button>
+              ) : null}
+            </div>
+            {keyError ? (
+              <p className="form-error" role="alert">
+                {keyError}
+              </p>
+            ) : null}
+            {keyMessage ? (
+              <p className="field__hint" role="status">
+                {keyMessage}
+              </p>
+            ) : null}
+          </section>
           <section className="settings-section" aria-labelledby="usage-heading">
             <h3 id="usage-heading">Current SerpApi usage</h3>
             <div className="usage">

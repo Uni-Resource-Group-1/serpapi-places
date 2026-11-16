@@ -10,6 +10,7 @@ import { buildDiscoveryEstimate, tileCriteria, tilesForCriteria } from "../servi
 import { parsePlaceInput } from "../services/place-imports.js";
 import { fetchPlace, fetchRunPlaces, fetchSearchRun } from "../services/dto.js";
 import { fetchReviews, loadReviews, refreshPlaceDetails } from "../services/details.js";
+import { resolveSerpApiKey } from "../services/serpapi-credentials.js";
 import { hashIp } from "../auth-crypto.js";
 import { audit } from "../services/audit.js";
 
@@ -106,7 +107,7 @@ export async function registerSearchRoutes(app: FastifyInstance): Promise<void> 
       if (criteria.plan !== "tiled") {
         throw new AppError(400, "not_tiled", "Queue-tiles requires tiled criteria with a tile grid.");
       }
-      if (!config.serpapi.apiKey) {
+      if (!(await resolveSerpApiKey(config))) {
         throw new AppError(409, "not_configured", "SerpApi is not configured on this server, so tiled runs cannot start.");
       }
       const estimate = await buildDiscoveryEstimate(criteria, config);

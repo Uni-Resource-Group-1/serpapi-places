@@ -84,18 +84,31 @@ export async function saveSourcePlace(place: ParsedPlace, appConfig: AppConfig):
   });
 }
 
+export interface RunPlaceContainment {
+  insideArea: boolean | null;
+  areaCheck: "radius" | "bounds" | "polygon" | null;
+}
+
 export async function addRunPlace(
   runId: string,
   sourceRecordId: string,
   distanceMeters: number | null,
   position: number,
+  containment: RunPlaceContainment | null = null,
 ): Promise<boolean> {
   const result = await query(
-    `INSERT INTO run_places (run_id, source_record_id, distance_m, position)
-     VALUES ($1, $2, $3, $4)
+    `INSERT INTO run_places (run_id, source_record_id, distance_m, position, inside_area, area_check)
+     VALUES ($1, $2, $3, $4, $5, $6)
      ON CONFLICT (run_id, source_record_id) DO NOTHING
      RETURNING source_record_id`,
-    [runId, sourceRecordId, distanceMeters, position],
+    [
+      runId,
+      sourceRecordId,
+      distanceMeters,
+      position,
+      containment?.insideArea ?? null,
+      containment?.areaCheck ?? null,
+    ],
   );
   return result.rowCount === 1;
 }

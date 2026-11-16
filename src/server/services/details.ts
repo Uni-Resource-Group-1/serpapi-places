@@ -2,6 +2,7 @@ import type { AppConfig } from "../config.js";
 import { one, query, transaction } from "../db.js";
 import { AppError, SourceError, errorMessage } from "../errors.js";
 import { getSerpApiDetails, getSerpApiReviews } from "../sources/serpapi.js";
+import { resolveSerpApiKey } from "./serpapi-credentials.js";
 import { audit } from "./audit.js";
 import { reserveSerpApiCalls } from "./usage.js";
 
@@ -36,7 +37,7 @@ export async function refreshPlaceDetails(
   if (record.source === "osm") {
     return { fetched: true, credits: 0, fields: record.fields };
   }
-  if (!appConfig.serpapi.apiKey) {
+  if (!(await resolveSerpApiKey(appConfig))) {
     throw new AppError(503, "serpapi_not_configured", "SerpApi is not configured on this server.");
   }
   const budget = await reserveSerpApiCalls(1, appConfig);
@@ -256,7 +257,7 @@ export async function fetchReviews(
   if (record.source !== "serpapi") {
     throw new AppError(400, "reviews_unavailable", "Reviews are only available for SerpApi records.");
   }
-  if (!appConfig.serpapi.apiKey) {
+  if (!(await resolveSerpApiKey(appConfig))) {
     throw new AppError(503, "serpapi_not_configured", "SerpApi is not configured on this server.");
   }
   const budget = await reserveSerpApiCalls(1, appConfig);

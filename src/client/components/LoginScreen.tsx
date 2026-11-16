@@ -1,5 +1,6 @@
 import { useEffect, useState, type FormEvent } from "react";
 import { api, ApiError, type AuthSessionInfo, type PublicStatus } from "../api.js";
+import { MapPinIcon } from "./icons.js";
 
 interface LoginScreenProps {
   onAuthenticated: (session: AuthSessionInfo) => void;
@@ -49,7 +50,7 @@ export function LoginScreen({ onAuthenticated }: LoginScreenProps) {
       <section className="login__hero" aria-labelledby="login-title">
         <div className="login__brand">
           <span className="brand-mark" aria-hidden="true">
-            ◉
+            <MapPinIcon size={18} />
           </span>
           Places Discovery
         </div>

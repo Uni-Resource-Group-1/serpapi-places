@@ -163,4 +163,37 @@ describe("geography selection", () => {
     expect(selected()).toMatchObject({ mode: "boundary", center: countries[0]?.center, regionCode: "", boundary: null });
     expect(focus).not.toHaveBeenCalled();
   });
+
+  it("warns that pasted import links must be parsed before the run can start", () => {
+    render(
+      <SearchPanel
+        criteria={criteria({ plan: "import", mode: "radius", sources: ["serpapi"], center: null })}
+        onChange={vi.fn()}
+        onRun={vi.fn()}
+        running={false}
+        usage={null}
+        maxPagesPerRun={6}
+        serpapiConfigured
+        hardLimits={{ maxRadiusMeters: 20000, maxTiledAreaKm2: 10000, maxTilesPerRun: 25, maxPagesPerTile: 3, maxImportPlaces: 25 }}
+        importRefs={[]}
+        importRejected={[]}
+        importText="https://maps.google.com/?cid=123"
+        importParsing={false}
+        estimateLoading={false}
+        onImportTextChange={vi.fn()}
+        onParseImports={vi.fn()}
+        onOpenSettings={vi.fn()}
+        onUseMapView={vi.fn()}
+        onFitResults={vi.fn()}
+        onFocusGeography={focus}
+        hasResults={false}
+        onSaveSearch={vi.fn()}
+      />,
+    );
+    expect(screen.getByText(/Press “Parse references”/)).toBeInTheDocument();
+    // The run must stay disabled until the pasted links are parsed: the submit
+    // action (the wide import button) is disabled while refs are empty.
+    const importButtons = screen.getAllByRole("button", { name: "Import places" });
+    expect(importButtons.some((button) => (button as HTMLButtonElement).disabled)).toBe(true);
+  });
 });

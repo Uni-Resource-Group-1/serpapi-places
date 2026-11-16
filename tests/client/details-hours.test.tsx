@@ -24,6 +24,8 @@ function place(hours: unknown, extraFields: Record<string, unknown> = {}): Place
     lat: 23.78,
     lon: 90.41,
     distanceMeters: null,
+    insideArea: null,
+    areaCheck: null,
     fields: { hours, ...extraFields },
     provenance: {},
     detailsStatus: "fetched",

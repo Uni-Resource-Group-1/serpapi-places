@@ -33,7 +33,7 @@ export function settingsDto(row: SettingsRow): Settings {
   };
 }
 
-export async function getSettings(appConfig: AppConfig): Promise<Settings> {
+export async function ensureSettingsRow(appConfig: AppConfig): Promise<void> {
   await query(
     `INSERT INTO app_settings
        (id, serpapi_monthly_limit, serpapi_daily_limit, serpapi_max_pages, serpapi_max_results, serpapi_price_usd)
@@ -47,6 +47,10 @@ export async function getSettings(appConfig: AppConfig): Promise<Settings> {
       appConfig.serpapi.pricePerSearchUsd,
     ],
   );
+}
+
+export async function getSettings(appConfig: AppConfig): Promise<Settings> {
+  await ensureSettingsRow(appConfig);
   const row = await one<SettingsRow>("SELECT * FROM app_settings WHERE id = 1");
   if (!row) throw new Error("Settings row could not be created");
   const settings = settingsDto(row);

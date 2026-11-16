@@ -496,6 +496,8 @@ export function DetailsPanel({
   const [reviews, setReviews] = useState<PlaceReviewPage | null>(null);
   const [collectionsOpen, setCollectionsOpen] = useState(false);
   const [selectedCollection, setSelectedCollection] = useState("");
+  const [unsaveMenuOpen, setUnsaveMenuOpen] = useState(false);
+  const [confirmDestroy, setConfirmDestroy] = useState(false);
 
   const saved = savedPlaces.find((item) => item.place.id === placeId || item.place.sourceId === place?.sourceId);
 
@@ -588,12 +590,20 @@ export function DetailsPanel({
       onNotify("success", `${place.name} saved.`);
     });
 
-  const removeSaved = () =>
-    runAction("save", async () => {
+  /**
+   * Remove this place from saved places. `destroySource` also drops the
+   * underlying source record when it is not referenced by another saved place
+   * or collection, so the row disappears from the library and the results list
+   * instead of lingering as an unsaved row.
+   */
+  const removeSaved = (destroySource = false) =>
+    runAction("unsave", async () => {
       if (!saved) return;
-      await api.deleteSavedPlace(saved.id);
+      await api.deleteSavedPlace(saved.id, { destroySource });
+      setUnsaveMenuOpen(false);
+      setConfirmDestroy(false);
       onChanged();
-      onNotify("info", "Removed from saved places.");
+      onNotify("info", destroySource ? "Removed from saved places and deleted from the library." : "Removed from saved places.");
     });
 
   const saveNote = () =>
@@ -1187,14 +1197,70 @@ export function DetailsPanel({
                     >
                       {busyAction === "note" ? "Saving…" : "Save note"}
                     </button>
-                    <button
-                      type="button"
-                      className="button button--ghost button--small"
-                      onClick={removeSaved}
-                      disabled={busyAction !== null}
-                    >
-                      Unsave
-                    </button>
+                    {unsaveMenuOpen ? (
+                      <>
+                        <button
+                          type="button"
+                          className="button button--ghost button--small"
+                          onClick={() => removeSaved(false)}
+                          disabled={busyAction !== null}
+                        >
+                          Unsave
+                        </button>
+                        {confirmDestroy ? (
+                          <span className="danger-confirm" role="alert">
+                            <span>
+                              Delete this place record from the library too? Its notes and collection
+                              membership are removed and cannot be undone.
+                            </span>
+                            <button
+                              type="button"
+                              className="button button--danger button--small"
+                              onClick={() => removeSaved(true)}
+                              disabled={busyAction !== null}
+                            >
+                              {busyAction === "unsave" ? "Deleting…" : "Yes, delete"}
+                            </button>
+                            <button
+                              type="button"
+                              className="button button--ghost button--small"
+                              onClick={() => setConfirmDestroy(false)}
+                              disabled={busyAction !== null}
+                            >
+                              Keep it
+                            </button>
+                          </span>
+                        ) : (
+                          <button
+                            type="button"
+                            className="button button--danger button--small"
+                            onClick={() => setConfirmDestroy(true)}
+                            disabled={busyAction !== null}
+                            title="Also delete the source record and any collections-only leftovers"
+                          >
+                            Unsave and delete…
+                          </button>
+                        )}
+                        <button
+                          type="button"
+                          className="button button--ghost button--small"
+                          onClick={() => { setUnsaveMenuOpen(false); setConfirmDestroy(false); }}
+                          disabled={busyAction !== null}
+                        >
+                          Cancel
+                        </button>
+                      </>
+                    ) : (
+                      <button
+                        type="button"
+                        className="button button--ghost button--small"
+                        onClick={() => setUnsaveMenuOpen(true)}
+                        disabled={busyAction !== null}
+                        aria-expanded={false}
+                      >
+                        Unsave…
+                      </button>
+                    )}
                     <button
                       type="button"
                       className="button button--ghost button--small"

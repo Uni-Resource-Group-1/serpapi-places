@@ -62,9 +62,11 @@ export function ExportModal({
     ...(serpapiExportEnabled ? ["serpapi"] : []),
   ]);
   const [fields, setFields] = useState<Set<string>>(new Set(DEFAULT_EXPORT_FIELDS));
+  const [insideOnly, setInsideOnly] = useState(false);
   const [jobs, setJobs] = useState<ExportJob[]>([]);
   const [loadingJobs, setLoadingJobs] = useState(true);
   const [busy, setBusy] = useState(false);
+  const [downloadingJob, setDownloadingJob] = useState<string | null>(null);
   const [deletingJob, setDeletingJob] = useState<string | null>(null);
   const [error, setError] = useState<string | null>(null);
   const [expandedJob, setExpandedJob] = useState<string | null>(null);
@@ -169,13 +171,48 @@ export function ExportModal({
         format,
         fields: [...fields],
         sources,
+        insideOnly: scope === "run" ? insideOnly : false,
       });
-      setJobs((current) => [job, ...current]);
+      setJobs((current) =>
+        current.some((item) => item.id === job.id)
+          ? current.map((item) => (item.id === job.id ? job : item))
+          : [job, ...current],
+      );
       onNotify("info", "Export queued. The worker builds it in the background.");
     } catch (caught) {
       setError(caught instanceof ApiError ? caught.message : "Could not queue the export.");
     } finally {
       setBusy(false);
+    }
+  };
+
+  const download = async (job: ExportJob) => {
+    if (downloadingJob) return;
+    setDownloadingJob(job.id);
+    try {
+      await downloadExport(job.id);
+      onNotify("success", job.fileName ? `Downloaded ${job.fileName}.` : "Download started.");
+      setJobs((current) =>
+        current.map((item) =>
+          item.id === job.id
+            ? {
+                ...item,
+                downloadCount: item.downloadCount + 1,
+                lastDownloadedAt: new Date().toISOString(),
+              }
+            : item,
+        ),
+      );
+    } catch (caught) {
+      const message =
+        caught instanceof ApiError
+          ? caught.status === 410
+            ? `${caught.message} Create a new export to download it again.`
+            : caught.message
+          : "Could not download this export.";
+      onNotify("error", message);
+    } finally {
+      setDownloadingJob(null);
     }
   };
 
@@ -387,6 +424,24 @@ export function ExportModal({
           )}
         </fieldset>
 
+        {scope === "run" ? (
+          <fieldset className="fieldset">
+            <legend>Area</legend>
+            <label className="check">
+              <input
+                type="checkbox"
+                checked={insideOnly}
+                onChange={(event) => setInsideOnly(event.target.checked)}
+              />
+              Only places inside the selected area
+            </label>
+            <p className="field__hint">
+              When enabled, records the run classified as outside the selected radius, rectangle, or boundary are left
+              out of the file and counted in the manifest. Stored records are never deleted.
+            </p>
+          </fieldset>
+        ) : null}
+
         <fieldset className="fieldset">
           <legend>Fields</legend>
           <div className="field-picker">
@@ -470,7 +525,18 @@ export function ExportModal({
                     <span>
                       {formatDateTime(job.createdAt)}
                       {job.rowCount !== null ? ` · ${job.rowCount} rows` : ""}
+                      {job.insideOnly ? " · inside area only" : ""}
                     </span>
+                    {job.status === "completed" && job.fileName ? (
+                      <span className="job-item__file">
+                        {job.fileName}
+                        {job.downloadCount > 0
+                          ? ` · downloaded ${job.downloadCount} time${job.downloadCount === 1 ? "" : "s"}${
+                              job.lastDownloadedAt ? ` (last ${formatDateTime(job.lastDownloadedAt)})` : ""
+                            }`
+                          : " · not downloaded yet"}
+                      </span>
+                    ) : null}
                   </div>
                   <Badge tone={jobTone(job.status)}>{job.status}</Badge>
                 </div>
@@ -479,9 +545,10 @@ export function ExportModal({
                     <button
                       type="button"
                       className="button button--secondary button--small"
-                      onClick={() => downloadExport(job.id)}
+                      onClick={() => void download(job)}
+                      disabled={downloadingJob === job.id}
                     >
-                      Download ZIP
+                      {downloadingJob === job.id ? "Downloading…" : "Download ZIP"}
                     </button>
                   ) : null}
                   <button

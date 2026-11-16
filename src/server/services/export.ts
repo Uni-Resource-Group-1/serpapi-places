@@ -34,6 +34,7 @@ interface ExportJobRow {
   format: ExportFormat;
   fields: string[];
   sources: Source[];
+  inside_only: boolean;
   status: string;
   created_by: string;
 }
@@ -265,6 +266,16 @@ async function rowsForJob(
     }
   }
   places = places.filter((place) => sources.includes(place.source));
+  if (job.scope === "run" && job.inside_only) {
+    const before = places.length;
+    places = places.filter((place) => place.insideArea !== false);
+    const removed = before - places.length;
+    if (removed > 0) {
+      caveats.push(
+        `${removed} record(s) outside the selected area were omitted because this export requested inside-area rows only.`,
+      );
+    }
+  }
   places.sort((a, b) => (a.distanceMeters ?? Number.MAX_SAFE_INTEGER) - (b.distanceMeters ?? Number.MAX_SAFE_INTEGER));
   return { places, criteria, caveats, omittedSelectionCount };
 }
@@ -326,6 +337,7 @@ export async function processExportJob(jobId: string, appConfig: AppConfig): Pro
       requestedSources: requestedSources,
       fields,
       omittedSources: omitted,
+      insideOnly: job.inside_only,
     },
     fields,
     omittedFields: [

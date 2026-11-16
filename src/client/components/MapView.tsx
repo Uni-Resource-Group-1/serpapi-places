@@ -6,9 +6,21 @@ import "leaflet.markercluster/dist/MarkerCluster.css";
 import "leaflet.markercluster/dist/MarkerCluster.Default.css";
 import type { Bounds, Coordinates, Place, SearchMode } from "../../shared/types.js";
 import { formatDistance, sourceLabel } from "../format.js";
+import {
+  MapPinIcon,
+  markerPinSvg,
+  markerRankLabel,
+  placeIconLabel,
+  placeIconName,
+} from "./icons.js";
 
 interface MapViewProps {
+  /** Already filtered and ordered by App, so marker numbers match list rows. */
   places: Place[];
+  rankById: ReadonlyMap<string, number>;
+  outsideHiddenCount?: number;
+  onShowOutside?: () => void;
+  loading?: boolean;
   center: Coordinates | null;
   radiusMeters: number;
   mode: SearchMode;
@@ -23,16 +35,52 @@ interface MapViewProps {
   tiles: { url: string; attribution: string; maxZoom: number };
   layers: { osm: boolean; serpapi: boolean };
   onLayersChange: (layers: { osm: boolean; serpapi: boolean }) => void;
+  /** Selects the current map viewport as the search area, then returns to search on mobile. */
+  onUseMapView: () => void;
 }
 
-function markerIcon(source: Place["source"], selected: boolean): L.DivIcon {
-  const glyph = source === "osm" ? "◇" : "●";
+/**
+ * One accessible description for a marker, shared by the rebuild and the
+ * selection effect so the two cannot drift apart.
+ */
+function markerAlt(
+  place: Place,
+  rank: number | null,
+  kind: ReturnType<typeof placeIconName>,
+  selected: boolean,
+): string {
+  return [
+    place.name,
+    rank === null ? null : `result ${rank}`,
+    sourceLabel(place.source),
+    placeIconLabel(kind),
+    place.category ?? "uncategorised",
+    selected ? "selected" : null,
+  ]
+    .filter(Boolean)
+    .join(", ");
+}
+
+interface MarkerIconOptions {
+  source: Place["source"];
+  selected: boolean;
+  rank: number | null;
+}
+
+/**
+ * A Google-Maps-style marker: a source-coloured teardrop with the result number
+ * inside its head. The category is deliberately not drawn on the pin, so a dense
+ * map stays legible; it remains in the tooltip and aria-label.
+ */
+function markerIcon({ source, selected, rank }: MarkerIconOptions): L.DivIcon {
+  const classes = ["pd-marker", `pd-marker--${source}`];
+  if (selected) classes.push("pd-marker--selected");
   return L.divIcon({
-    className: `pd-marker pd-marker--${source}${selected ? " pd-marker--selected" : ""}`,
-    html: `<span aria-hidden="true"><span class="pd-marker__glyph">${glyph}</span></span>`,
-    iconSize: [44, 44],
-    iconAnchor: [22, 40],
-    tooltipAnchor: [0, -35],
+    className: classes.join(" "),
+    html: `${markerPinSvg(source)}${markerRankLabel(rank)}`,
+    iconSize: [26, 38],
+    iconAnchor: [13, 36],
+    tooltipAnchor: [0, -34],
   });
 }
 
@@ -65,6 +113,10 @@ function toBounds(bounds: L.LatLngBounds): Bounds {
 
 export function MapView({
   places,
+  rankById,
+  outsideHiddenCount = 0,
+  onShowOutside,
+  loading = false,
   center,
   radiusMeters,
   mode,
@@ -79,6 +131,7 @@ export function MapView({
   tiles,
   layers,
   onLayersChange,
+  onUseMapView,
 }: MapViewProps) {
   const containerRef = useRef<HTMLDivElement>(null);
   const mapRef = useRef<L.Map | null>(null);
@@ -216,19 +269,21 @@ export function MapView({
     serpCluster.clearLayers();
     markerMapRef.current.clear();
 
-    for (const place of places) {
-      if (!Number.isFinite(place.lat) || !Number.isFinite(place.lon)) continue;
+    places.forEach((place) => {
+      if (!Number.isFinite(place.lat) || !Number.isFinite(place.lon)) return;
+      const rank = rankById.get(place.id) ?? null;
+      const kind = placeIconName(place.category);
       const marker = L.marker([place.lat, place.lon], {
-        icon: markerIcon(place.source, place.id === selectedId),
+        icon: markerIcon({ source: place.source, selected: place.id === selectedId, rank }),
         keyboard: true,
-        title: place.name,
-        alt: `${place.name} (${sourceLabel(place.source)})`,
+        title: rank === null ? place.name : `${rank}. ${place.name}`,
+        alt: markerAlt(place, rank, kind, false),
         riseOnHover: true,
       });
       const tooltip = document.createElement("div");
       tooltip.className = "pd-tooltip";
       const title = document.createElement("strong");
-      title.textContent = place.name;
+      title.textContent = rank === null ? place.name : `${rank}. ${place.name}`;
       const meta = document.createElement("span");
       meta.textContent = `${sourceLabel(place.source)} · ${place.category ?? "Uncategorised"} · ${formatDistance(place.distanceMeters)}`;
       tooltip.append(title, meta);
@@ -236,12 +291,12 @@ export function MapView({
       marker.on("click", () => callbacksRef.current.onSelect(place.id));
       marker.on("add", () => {
         const element = marker.getElement();
-        if (element) element.setAttribute("aria-label", `${place.name}, ${sourceLabel(place.source)}, ${place.category ?? "uncategorised"}`);
+        if (element) element.setAttribute("aria-label", markerAlt(place, rank, kind, false));
       });
       markerMapRef.current.set(place.id, marker);
       if (place.source === "osm") osmCluster.addLayer(marker);
       else serpCluster.addLayer(marker);
-    }
+    });
     const labelClusters = (group: L.MarkerClusterGroup, source: string) => {
       for (const marker of group.getLayers()) {
         const visible = group.getVisibleParent(marker as L.Marker);
@@ -254,8 +309,9 @@ export function MapView({
       labelClusters(osmCluster, "OpenStreetMap");
       labelClusters(serpCluster, "SerpApi");
     });
+    // Selection is reflected by the dedicated effect below.
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [places]);
+  }, [places, rankById]);
 
   // Reflect selection without rebuilding every marker.
   useEffect(() => {
@@ -263,10 +319,23 @@ export function MapView({
     if (!map) return;
     const byId = new Map(places.map((place) => [place.id, place]));
     for (const [id, item] of markerMapRef.current) {
-      item.setZIndexOffset(id === selectedId ? 1000 : 0);
+      const isSelected = id === selectedId;
+      item.setZIndexOffset(isSelected ? 1000 : 0);
       const itemPlace = byId.get(id);
-      item.setIcon(markerIcon(itemPlace?.source ?? "osm", id === selectedId));
-      if (itemPlace) item.getElement()?.setAttribute("aria-label", `${itemPlace.name}, ${sourceLabel(itemPlace.source)}, ${itemPlace.category ?? "uncategorised"}${id === selectedId ? ", selected" : ""}`);
+      // A marker without loaded place data keeps its glyph and just loses the highlight.
+      item.setIcon(
+        markerIcon({
+          source: itemPlace?.source ?? "osm",
+          selected: isSelected,
+          rank: rankById.get(id) ?? null,
+        }),
+      );
+      if (itemPlace) {
+        item.getElement()?.setAttribute(
+          "aria-label",
+          markerAlt(itemPlace, rankById.get(id) ?? null, placeIconName(itemPlace.category), isSelected),
+        );
+      }
     }
     const marker = selectedId ? markerMapRef.current.get(selectedId) : null;
     if (!marker) return;
@@ -275,7 +344,7 @@ export function MapView({
     if (!map.getBounds().pad(-0.15).contains(latlng)) {
       map.panTo(latlng, { animate: true });
     }
-  }, [selectedId, places]);
+  }, [selectedId, places, rankById]);
 
   // Reflect hovered card -> marker tooltip (kept separate from rebuilds).
   useEffect(() => {
@@ -417,6 +486,32 @@ export function MapView({
   return (
     <div className="map-wrap">
       <div ref={containerRef} className="map-canvas" role="application" aria-label="Places map" />
+      {places.length === 0 ? (
+        <div className="map-placeholder" role="status">
+          <span className="map-placeholder__icon" aria-hidden="true">
+            <MapPinIcon size={26} />
+          </span>
+          <strong>
+            {loading
+              ? "Loading places…"
+              : outsideHiddenCount > 0
+                ? "All loaded places are outside the selected area"
+                : "No places to plot yet"}
+          </strong>
+          <p>
+            {loading
+              ? "Results will appear on the map as soon as the run finishes."
+              : outsideHiddenCount > 0
+                ? `${outsideHiddenCount} loaded place${outsideHiddenCount === 1 ? "" : "s"} fall outside the area you selected. They are kept in the run and only hidden from this view.`
+                : "Run a search to plot results here, or widen the search area if nothing matches."}
+          </p>
+          {outsideHiddenCount > 0 && onShowOutside ? (
+            <button type="button" className="button button--secondary button--small" onClick={onShowOutside}>
+              Show outside selected area
+            </button>
+          ) : null}
+        </div>
+      ) : null}
       <div className="map-toolbar" aria-label="Map layers">
         <label className="layer-toggle">
           <input
@@ -439,9 +534,19 @@ export function MapView({
         <button type="button" className="map-toolbar__button" onClick={fitNow} aria-label="Fit loaded places on map">
           Fit
         </button>
+        {mode === "area" ? (
+          <button
+            type="button"
+            className="map-toolbar__button map-toolbar__button--primary"
+            onClick={onUseMapView}
+            aria-label="Use current map view as the search area"
+          >
+            Use this view
+          </button>
+        ) : null}
       </div>
       {mode === "area" ? (
-        <p className="map-hint">Map-area mode: pan or zoom, then press “Use current map view” in the sidebar.</p>
+        <p className="map-hint">Map-area mode: pan or zoom, then use “Use this view” here or in the sidebar.</p>
       ) : null}
       <div className="map-legend">
         <span className="layer-dot layer-dot--osm" aria-hidden="true" /> OSM

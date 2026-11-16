@@ -2,7 +2,7 @@ import type { FastifyInstance } from "fastify";
 import { z } from "zod";
 import { authenticate, checkOrigin, requireCsrf } from "../auth.js";
 import { config } from "../config.js";
-import { one, query } from "../db.js";
+import { many, one, query } from "../db.js";
 import { AppError } from "../errors.js";
 import { validateCriteria } from "../validation.js";
 import { createSearchRun } from "../services/search-runs.js";
@@ -33,6 +33,23 @@ const collectionSchema = z.object({
   name: z.string().trim().min(1).max(120),
   description: z.string().trim().max(1000).nullable().optional(),
 });
+
+/**
+ * Delete source records that nothing else depends on. Run placements, reviews,
+ * match candidates, and canonical links all cascade from the source record, so
+ * this only runs for an explicit "delete the place too" request and never for a
+ * plain unsave.
+ */
+async function destroyOrphanedSourceRecords(sourceRecordIds: string[]): Promise<number> {
+  if (sourceRecordIds.length === 0) return 0;
+  const deleted = await query(
+    `DELETE FROM source_place_records s
+     WHERE s.id = ANY($1::uuid[])
+       AND NOT EXISTS (SELECT 1 FROM saved_places sp WHERE sp.source_record_id = s.id)`,
+    [sourceRecordIds],
+  );
+  return deleted.rowCount ?? 0;
+}
 
 function snapshotFor(place: Awaited<ReturnType<typeof fetchPlace>>): Record<string, unknown> {
   if (!place) throw new AppError(404, "not_found", "Place not found.");
@@ -288,14 +305,34 @@ export async function registerLibraryRoutes(app: FastifyInstance): Promise<void>
     async (request, reply) => {
       checkOrigin(request);
       const params = z.object({ id: z.string().uuid() }).safeParse(request.params);
+      const queryParams = z
+        .object({ destroySource: z.enum(["true", "false"]).optional() })
+        .safeParse(request.query);
       if (!params.success) throw new AppError(400, "invalid_id", "Invalid saved place id.");
-      const deleted = await query("DELETE FROM saved_places WHERE id = $1", [params.data.id]);
-      if (deleted.rowCount === 0) throw new AppError(404, "not_found", "Saved place not found.");
+
+      // `destroySource` opts in to also deleting the underlying source record so
+      // the place disappears from every results list. Without it the source
+      // record and its run placement are preserved and only the saved snapshot
+      // goes away, which keeps "nothing valid is deleted" true by default.
+      const destroySource = queryParams.success && queryParams.data.destroySource === "true";
+      const rows = await many<{ source_record_id: string | null }>(
+        `DELETE FROM saved_places WHERE id = $1 RETURNING source_record_id`,
+        [params.data.id],
+      );
+      const row = rows[0];
+      if (!row) throw new AppError(404, "not_found", "Saved place not found.");
+
+      let destroyed = 0;
+      if (destroySource && row.source_record_id) {
+        destroyed = await destroyOrphanedSourceRecords([row.source_record_id]);
+      }
+
       await audit({
         actor: request.auth!.displayName,
         action: "saved_place.deleted",
         targetType: "saved_place",
         targetId: params.data.id,
+        metadata: { destroySource, destroyedSourceRecords: destroyed },
       });
       return reply.code(204).send();
     },
@@ -306,16 +343,30 @@ export async function registerLibraryRoutes(app: FastifyInstance): Promise<void>
     { preHandler: [authenticate, requireCsrf] },
     async (request) => {
       checkOrigin(request);
-      const body = z.object({ ids: z.array(z.string().uuid()).min(1).max(500) }).safeParse(request.body);
+      const body = z
+        .object({
+          ids: z.array(z.string().uuid()).min(1).max(500),
+          destroySource: z.boolean().optional(),
+        })
+        .safeParse(request.body);
       if (!body.success) throw new AppError(400, "invalid_request", "Choose places to delete.");
-      const deleted = await query("DELETE FROM saved_places WHERE id = ANY($1::uuid[])", [body.data.ids]);
+      const rows = await many<{ source_record_id: string | null }>(
+        `DELETE FROM saved_places WHERE id = ANY($1::uuid[]) RETURNING source_record_id`,
+        [body.data.ids],
+      );
+      const records = rows
+        .map((row) => row.source_record_id)
+        .filter((id): id is string => typeof id === "string");
+      const destroyed = body.data.destroySource === true && records.length > 0
+        ? await destroyOrphanedSourceRecords(records)
+        : 0;
       await audit({
         actor: request.auth!.displayName,
         action: "saved_place.bulk_deleted",
         targetType: "saved_place",
-        metadata: { count: deleted.rowCount ?? 0 },
+        metadata: { count: rows.length, destroySource: body.data.destroySource === true, destroyedSourceRecords: destroyed },
       });
-      return { deleted: deleted.rowCount ?? 0 };
+      return { deleted: rows.length, destroyed };
     },
   );
 
@@ -435,6 +486,40 @@ export async function registerLibraryRoutes(app: FastifyInstance): Promise<void>
       if (deleted.rowCount === 0) throw new AppError(404, "not_found", "Collection item not found.");
       await query("UPDATE collections SET updated_at = now() WHERE id = $1", [params.data.id]);
       return { deleted: 1 };
+    },
+  );
+
+  // Remove saved places from a collection without deleting the saved places.
+  // Omit `savedPlaceIds` to empty the collection.
+  app.post(
+    "/api/collections/:id/items/remove",
+    { preHandler: [authenticate, requireCsrf] },
+    async (request) => {
+      checkOrigin(request);
+      const params = z.object({ id: z.string().uuid() }).safeParse(request.params);
+      const body = z
+        .object({ savedPlaceIds: z.array(z.string().uuid()).min(1).max(2000).optional() })
+        .safeParse(request.body ?? {});
+      if (!params.success || !body.success) throw new AppError(400, "invalid_request", "Invalid collection removal request.");
+      const collection = await one<{ id: string }>("SELECT id FROM collections WHERE id = $1", [params.data.id]);
+      if (!collection) throw new AppError(404, "not_found", "Collection not found.");
+
+      const removed = body.data.savedPlaceIds
+        ? await query(
+            "DELETE FROM collection_items WHERE collection_id = $1 AND saved_place_id = ANY($2::uuid[])",
+            [params.data.id, body.data.savedPlaceIds],
+          )
+        : await query("DELETE FROM collection_items WHERE collection_id = $1", [params.data.id]);
+
+      await query("UPDATE collections SET updated_at = now() WHERE id = $1", [params.data.id]);
+      await audit({
+        actor: request.auth!.displayName,
+        action: "collection.items_removed",
+        targetType: "collection",
+        targetId: params.data.id,
+        metadata: { removed: removed.rowCount ?? 0, scope: body.data.savedPlaceIds ? "selected" : "all" },
+      });
+      return { deleted: removed.rowCount ?? 0 };
     },
   );
 

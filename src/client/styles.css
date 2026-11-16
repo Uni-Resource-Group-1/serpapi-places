@@ -185,6 +185,10 @@ button {
   flex: 0 0 auto;
 }
 
+.brand-mark svg {
+  display: block;
+}
+
 .topbar__usage {
   margin-left: auto;
 }
@@ -482,6 +486,23 @@ button {
   color: var(--muted);
 }
 
+.field--checkbox {
+  cursor: pointer;
+  user-select: none;
+}
+
+.field--checkbox input {
+  width: 16px;
+  height: 16px;
+  accent-color: var(--primary);
+  flex: 0 0 auto;
+}
+
+.field--checkbox > span {
+  font-weight: 500;
+  color: var(--ink);
+}
+
 .field-grid {
   display: grid;
   grid-template-columns: repeat(2, minmax(0, 1fr));
@@ -489,6 +510,11 @@ button {
 }
 
 .form-error {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  flex-wrap: wrap;
+  gap: 8px;
   padding: 8px 10px;
   border-radius: 7px;
   background: var(--danger-soft);
@@ -1142,6 +1168,22 @@ button {
   font-size: 11px;
 }
 
+/* Eight-column provenance table: allow horizontal scroll instead of cramming
+   cells into a narrow sidebar. Focusable so keyboard users can scroll it. */
+.table-scroll {
+  overflow-x: auto;
+  max-width: 100%;
+}
+
+.table-scroll > table {
+  min-width: 640px;
+}
+
+.table-scroll:focus-visible {
+  outline: 2px solid var(--primary);
+  outline-offset: 2px;
+}
+
 .source-summary th,
 .source-summary td {
   padding: 5px 8px;
@@ -1261,8 +1303,37 @@ button {
 .place-card__badges {
   display: flex;
   flex-wrap: wrap;
+  align-items: center;
   gap: 4px;
   margin-bottom: 2px;
+}
+
+.place-card__rank {
+  display: inline-grid;
+  place-items: center;
+  min-width: 20px;
+  height: 20px;
+  padding: 0 5px;
+  border-radius: 999px;
+  background: var(--ink);
+  color: #fff;
+  font-size: 10px;
+  font-weight: 800;
+  font-variant-numeric: tabular-nums;
+  line-height: 1;
+}
+
+.place-card__rank--osm {
+  background: var(--osm);
+}
+
+.place-card__rank--serpapi {
+  background: var(--serpapi);
+}
+
+.place-card--selected .place-card__rank {
+  outline: 2px solid rgba(20, 45, 38, 0.22);
+  outline-offset: 1px;
 }
 
 .place-card__name {
@@ -1326,6 +1397,53 @@ button {
 .leaflet-control-attribution {
   font-size: 9.5px;
   background: rgba(255, 255, 255, 0.9) !important;
+}
+
+.map-placeholder {
+  position: absolute;
+  z-index: 500;
+  left: 50%;
+  top: 50%;
+  transform: translate(-50%, -50%);
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 7px;
+  width: min(320px, calc(100% - 40px));
+  padding: 18px 20px;
+  border: 1px solid var(--line-strong);
+  border-radius: 14px;
+  background: rgba(255, 255, 255, 0.94);
+  box-shadow: var(--shadow-sm);
+  text-align: center;
+  pointer-events: none;
+  backdrop-filter: blur(4px);
+}
+
+.map-placeholder__icon {
+  display: inline-grid;
+  place-items: center;
+  width: 46px;
+  height: 46px;
+  border-radius: 50%;
+  background: var(--primary-soft);
+  color: var(--primary-strong);
+}
+
+.map-placeholder strong {
+  font-size: 13px;
+}
+
+.map-placeholder p {
+  margin: 0;
+  font-size: 11.5px;
+  line-height: 1.4;
+  color: var(--muted);
+}
+
+.map-placeholder .button {
+  margin-top: 4px;
+  pointer-events: auto;
 }
 
 .map-toolbar {
@@ -1394,6 +1512,12 @@ button {
   font-weight: 650;
 }
 
+.map-toolbar__button--primary {
+  border-color: var(--primary);
+  background: var(--primary);
+  color: #fff;
+}
+
 .map-hint {
   position: absolute;
   z-index: 900;
@@ -1451,44 +1575,93 @@ button {
   cursor: pointer;
 }
 
-.pd-marker > span {
-  display: grid;
-  place-items: center;
-  width: 32px;
-  height: 32px;
-  margin: 3px auto;
-  transform: rotate(-45deg);
-  border-radius: 50% 50% 50% 4px;
-  border: 2px solid #fff;
+/*
+ * Google-Maps-style marker: a solid source-coloured teardrop with the result
+ * number in the head. Kept intentionally plain so a dense map stays readable.
+ */
+.pd-marker > svg {
+  display: block;
+  width: 26px;
+  height: 38px;
+  filter: drop-shadow(0 2px 3px rgba(0, 0, 0, 0.35));
+  transition: transform 0.12s ease;
+  transform-origin: 50% 100%;
+}
+
+.pd-pin__body {
+  stroke: #fff;
+  stroke-width: 1.4;
+  stroke-linejoin: round;
+}
+
+.pd-pin__stop-a { stop-color: var(--pin-a); }
+.pd-pin__stop-b { stop-color: var(--pin-b); }
+
+/* Source palettes: SerpApi reads like a classic red Google pin, OSM is green. */
+.pd-marker--osm {
+  --pin-a: #3cb371;
+  --pin-b: #1f8a4c;
+}
+
+.pd-marker--serpapi {
+  --pin-a: #f4633a;
+  --pin-b: #d63a25;
+}
+
+/* Result number, centred in the pin head. This is the marker→list link. */
+.pd-marker__rank {
+  position: absolute;
+  top: 5px;
+  left: 0;
+  width: 26px;
+  display: block;
   color: #fff;
-  box-shadow: 0 3px 7px rgba(0, 0, 0, 0.34);
-  transition: scale 0.12s ease;
-}
-
-.pd-marker__glyph {
-  transform: rotate(45deg);
-  font-size: 17px;
-  font-weight: 900;
+  font-size: 12px;
+  font-weight: 700;
   line-height: 1;
+  text-align: center;
+  font-variant-numeric: tabular-nums;
 }
 
-.pd-marker--osm > span { background: var(--osm); }
-.pd-marker--serpapi > span { background: var(--serpapi); border-radius: 50% 50% 4px 50%; }
-.pd-marker--selected > span { scale: 1.17; outline: 3px solid #142d26; outline-offset: 3px; }
+.pd-marker__rank--compact {
+  font-size: 9px;
+  letter-spacing: -0.04em;
+}
+
+.pd-marker:hover > svg,
+.pd-marker--selected > svg {
+  transform: scale(1.12);
+}
+
+.pd-marker--selected > svg {
+  filter: drop-shadow(0 3px 6px rgba(0, 0, 0, 0.4));
+}
+
+.pd-marker--selected .pd-marker__rank {
+  font-weight: 800;
+}
+
 .pd-marker:focus-visible, .pd-cluster:focus-visible { outline: 3px solid #162f28; outline-offset: 2px; }
 
+/*
+ * Clusters are deliberately NOT shaped or coloured like pins: the number on a
+ * pin is a result number, while the number on a cluster is how many places are
+ * grouped there. A neutral circular bubble keeps the two from being confused.
+ */
 .pd-cluster {
   display: grid;
   place-items: center;
   border-radius: 50%;
   border: 3px solid #fff;
-  box-shadow: 0 2px 8px rgba(0, 0, 0, 0.3);
+  background: var(--ink);
+  box-shadow: 0 2px 8px rgba(0, 0, 0, 0.35);
   color: #fff;
   font-size: 13px;
   font-weight: 800;
+  font-variant-numeric: tabular-nums;
 }
-.pd-cluster--osm { background: var(--osm); }
-.pd-cluster--serpapi { background: var(--serpapi); border-radius: 12px; }
+.pd-cluster--osm { background: #14532d; }
+.pd-cluster--serpapi { background: #7c2d12; }
 .layer-dot--serpapi { border-radius: 2px; }
 
 .pd-center-marker span {
@@ -2665,6 +2838,102 @@ button {
   padding: 4px 8px;
 }
 
+.bulk-bar--danger {
+  border-color: #f0c2c2;
+  background: #fdf2f2;
+}
+
+/* Two-step inline confirmation for destructive place actions in the details
+   panel; consequence-focused before the delete can run. */
+.danger-confirm {
+  display: flex;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: 8px;
+  padding: 8px 10px;
+  border: 1px solid #f0c2c2;
+  border-radius: 8px;
+  background: #fdf2f2;
+  font-size: 12px;
+  color: var(--ink);
+}
+
+.check-inline {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  font-size: 12px;
+  color: var(--ink);
+  white-space: nowrap;
+}
+
+.check-inline input[type="checkbox"] {
+  width: auto;
+  min-height: 0;
+  margin: 0;
+}
+
+/* Small dropdown used by the Saved places "Remove…" scope menu. */
+.menu-anchor {
+  position: relative;
+  display: inline-flex;
+}
+
+.menu {
+  position: absolute;
+  top: calc(100% + 4px);
+  right: 0;
+  z-index: 5;
+  display: flex;
+  flex-direction: column;
+  min-width: 210px;
+  padding: 4px;
+  border: 1px solid var(--line);
+  border-radius: 8px;
+  background: #fff;
+  box-shadow: var(--shadow-sm);
+}
+
+.menu__item {
+  display: block;
+  width: 100%;
+  padding: 8px 10px;
+  border: 0;
+  border-radius: 6px;
+  background: transparent;
+  color: var(--ink);
+  font-size: 12.5px;
+  text-align: left;
+  cursor: pointer;
+}
+
+.menu__item:hover:not([disabled]) {
+  background: var(--panel-soft);
+}
+
+.menu__item[disabled] {
+  color: var(--muted);
+  cursor: not-allowed;
+}
+
+.menu__item--danger {
+  color: var(--danger);
+  font-weight: 650;
+}
+
+.menu__hint {
+  color: var(--muted);
+  font-weight: 400;
+}
+
+/* Inline confirm for a single saved place. */
+.saved-item__remove {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+  margin-left: auto;
+}
+
 .saved-list,
 .collection-list,
 .search-list,
@@ -3034,6 +3303,12 @@ button {
   color: var(--muted);
 }
 
+.job-item__file {
+  font-family: var(--mono, ui-monospace, SFMono-Regular, Menlo, monospace);
+  font-size: 10.5px !important;
+  overflow-wrap: anywhere;
+}
+
 .export-jobs__heading {
   display: flex;
   align-items: baseline;
@@ -3223,6 +3498,27 @@ button {
     width: 100%;
     justify-content: space-between;
     gap: 4px;
+  }
+
+  /* Keep secondary actions on one row instead of wrapping into extra header
+     rows that eat the map/list height; scroll sideways if they cannot fit. */
+  @media (max-width: 560px) {
+    .topbar__nav {
+      justify-content: flex-start;
+      flex-wrap: nowrap;
+      overflow-x: auto;
+      padding-bottom: 2px;
+      scrollbar-width: none;
+      -webkit-overflow-scrolling: touch;
+    }
+
+    .topbar__nav::-webkit-scrollbar {
+      display: none;
+    }
+
+    .topbar__nav > * {
+      flex: 0 0 auto;
+    }
   }
 
   .topbar__user {
